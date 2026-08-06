@@ -126,6 +126,12 @@ pub async fn start_logging(
     }
     logger.start();
 
+    // Reset the dropped-sample counter for this session and mark recording
+    // active so the stream tick counts (rather than silently swallows) any
+    // sample it can't hand to the logger while the lock is busy (D10).
+    crate::state::LOGGER_SAMPLES_DROPPED.store(0, std::sync::atomic::Ordering::Relaxed);
+    crate::state::LOGGER_RECORDING.store(true, std::sync::atomic::Ordering::Relaxed);
+
     Ok(())
 }
 
@@ -133,6 +139,7 @@ pub async fn start_logging(
 pub async fn stop_logging(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let mut logger = state.data_logger.lock().await;
     logger.stop();
+    crate::state::LOGGER_RECORDING.store(false, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 

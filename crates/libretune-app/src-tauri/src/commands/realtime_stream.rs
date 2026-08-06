@@ -168,7 +168,17 @@ pub(crate) async fn feed_data_logger(app_state: &AppState, data: &HashMap<String
     // try_lock: never stall the stream tick on logger contention
     let mut logger = match app_state.data_logger.try_lock() {
         Ok(l) => l,
-        Err(_) => return,
+        Err(_) => {
+            // The lock is held elsewhere. If a recording is active this tick's
+            // sample is lost -- count it so the loss is visible instead of
+            // silent (D10). When not recording the drop is harmless, so don't
+            // inflate the counter.
+            if crate::state::LOGGER_RECORDING.load(std::sync::atomic::Ordering::Relaxed) {
+                crate::state::LOGGER_SAMPLES_DROPPED
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            return;
+        }
     };
     if !logger.is_recording() {
         return;
@@ -487,6 +497,8 @@ pub async fn start_realtime_stream(
                 transfer_reason: mode_reason,
                 interval_ms: interval,
                 started_at_ms: chrono::Utc::now().timestamp_millis(),
+                samples_dropped: crate::state::LOGGER_SAMPLES_DROPPED
+                    .load(std::sync::atomic::Ordering::Relaxed),
             };
         }
 
@@ -806,6 +818,8 @@ pub async fn start_realtime_stream(
                     stats.ticks_success = local_ticks_success;
                     stats.ticks_skipped = local_ticks_skipped;
                     stats.ticks_error = local_ticks_error;
+                    stats.samples_dropped = crate::state::LOGGER_SAMPLES_DROPPED
+                        .load(std::sync::atomic::Ordering::Relaxed);
                 }
             }
         }
