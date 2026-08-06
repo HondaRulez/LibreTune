@@ -327,6 +327,13 @@ impl AutoTuneState {
         }
     }
 
+    /// Number of samples that passed the filters this session — the
+    /// denominator behind each cell's hit percentage. Exposed for diagnostics
+    /// (e.g. logging how much data a session actually accepted).
+    pub fn total_samples(&self) -> u64 {
+        self.total_samples
+    }
+
     pub fn add_data_point(
         &mut self,
         point: VEDataPoint,
@@ -345,6 +352,25 @@ impl AutoTuneState {
         self.prune_data_buffer(point.timestamp_ms);
 
         if !self.passes_filters(&point, filters) {
+            // Throttled so a full drive doesn't flood the log, but enough to
+            // show *why* AutoTune "does nothing": compare these against the
+            // active filter thresholds (a warm-up CLT below min_clt and a
+            // tip-in TPS rate above max_tps_rate are the usual culprits).
+            static REJECTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = REJECTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n < 5 || n.is_multiple_of(100) {
+                tracing::debug!(
+                    rpm = point.rpm,
+                    clt = point.clt,
+                    tps_rate = point.tps_rate,
+                    min_rpm = filters.min_rpm,
+                    max_rpm = filters.max_rpm,
+                    min_clt = filters.min_clt,
+                    max_tps_rate = filters.max_tps_rate,
+                    rejected_so_far = n + 1,
+                    "AutoTune: sample rejected by filters"
+                );
+            }
             return;
         }
 
@@ -381,6 +407,21 @@ impl AutoTuneState {
             Some(hp) => hp,
             None => {
                 if self.strict_lambda_match {
+                    // Strict mode (the default) silently dropped these before,
+                    // a common reason accepted-sample counts stay near zero on
+                    // an otherwise-valid session. Throttled to stay readable.
+                    static NO_DELAY: std::sync::atomic::AtomicU64 =
+                        std::sync::atomic::AtomicU64::new(0);
+                    let n = NO_DELAY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if n < 5 || n.is_multiple_of(100) {
+                        tracing::debug!(
+                            timestamp_ms = point.timestamp_ms,
+                            delay_ms,
+                            dropped_so_far = n + 1,
+                            "AutoTune: sample dropped (strict lambda-delay: no delayed \
+                             buffer match at target delay)"
+                        );
+                    }
                     return;
                 }
                 tracing::warn!(
@@ -462,6 +503,27 @@ impl AutoTuneState {
         } else {
             0.0
         };
+
+        // Periodic proof-of-life: shows AutoTune is accepting samples and how
+        // the current cell's recommendation is evolving. Capturing these ends
+        // the `current_recs` borrow so `self` can be read for the summary.
+        let (rec_begin, rec_value, rec_hits) = (
+            current_recs.beginning_value,
+            current_recs.recommended_value,
+            current_recs.hit_count,
+        );
+        if self.total_samples.is_multiple_of(50) {
+            tracing::debug!(
+                total_accepted = self.total_samples,
+                cells_touched = self.recommendations.len(),
+                cell_x = cell_x_idx,
+                cell_y = cell_y_idx,
+                begin_ve = rec_begin,
+                recommended_ve = rec_value,
+                cell_hits = rec_hits,
+                "AutoTune: accepted sample"
+            );
+        }
     }
 
     /// Apply authority limits to clamp the recommended VE change
