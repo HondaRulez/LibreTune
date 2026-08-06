@@ -54,6 +54,12 @@ const MAX_HOLD_MS: u64 = 5_000;
 /// editing a table cell, where interpolation between cells would blur it.
 const FUEL_CONSTANT: &str = "reqFuel";
 
+/// Progress event emitted to the frontend during a delay-test run (as
+/// `afr_delay_test:progress`). `phase` is a coarse stage label —
+/// "starting", "enriching", "settling", then "complete" or "aborted".
+/// `applied_value` and `baseline_value` are the current and restore
+/// fuel-constant values so the UI can show exactly what is written and
+/// confirm the restore.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DelayTestProgress {
