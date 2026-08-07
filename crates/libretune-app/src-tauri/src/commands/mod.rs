@@ -77,3 +77,4 @@ pub mod types;
 pub mod update_project_ini;
 pub mod util_helpers;
 pub mod wasm_plugin;
+pub mod webview_log;

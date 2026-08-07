@@ -168,6 +168,7 @@ use commands::wasm_plugin::{
     execute_wasm_plugin, get_wasm_plugin_info, list_wasm_plugins, load_wasm_plugin,
     unload_wasm_plugin,
 };
+use commands::webview_log::log_webview_message;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -441,7 +442,8 @@ pub fn run() {
             unload_wasm_plugin,
             list_wasm_plugins,
             execute_wasm_plugin,
-            get_wasm_plugin_info
+            get_wasm_plugin_info,
+            log_webview_message
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
