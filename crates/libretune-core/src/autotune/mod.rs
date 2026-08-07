@@ -13,6 +13,7 @@
 //! - Anomaly detection for identifying suspect data and tune problems
 //! - Tune health scoring with per-region quality assessment
 
+pub mod accel_enrich;
 pub mod anomaly;
 pub mod health;
 pub mod predictor;
