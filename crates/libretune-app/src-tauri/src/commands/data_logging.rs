@@ -79,6 +79,9 @@ pub struct LoggingStatus {
     entry_count: usize,
     duration_ms: u64,
     channels: Vec<String>,
+    /// Oldest samples dropped because the in-memory buffer hit its ceiling.
+    /// Nonzero means the log no longer covers the whole session (D7).
+    discarded_count: u64,
 }
 
 #[derive(Serialize)]
@@ -153,6 +156,7 @@ pub async fn get_logging_status(
         entry_count: logger.entry_count(),
         duration_ms: logger.duration().as_millis() as u64,
         channels: logger.channels().to_vec(),
+        discarded_count: logger.discarded_count(),
     })
 }
 
