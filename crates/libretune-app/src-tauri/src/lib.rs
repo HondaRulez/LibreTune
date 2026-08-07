@@ -41,6 +41,7 @@ pub(crate) use commands::util_helpers::{
 use commands::adaptive_timing::{
     disable_adaptive_timing, enable_adaptive_timing, get_adaptive_timing_stats,
 };
+use commands::afr_delay_test::{abort_afr_delay_test, run_afr_delay_test};
 use commands::agent::{
     agent_apply_proposals, agent_delete_chat, agent_list_chats, agent_load_chat, agent_save_chat,
     agent_send_message, agent_status, agent_stop,
@@ -258,6 +259,9 @@ pub fn run() {
             get_port_editor,
             get_port_editor_assignments,
             save_port_editor_assignments,
+            // AFR transport-delay step test
+            run_afr_delay_test,
+            abort_afr_delay_test,
             // Math Channels
             get_math_channels,
             set_math_channel,
