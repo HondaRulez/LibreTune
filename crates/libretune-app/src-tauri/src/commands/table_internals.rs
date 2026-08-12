@@ -366,6 +366,17 @@ pub(crate) async fn update_table_z_values_internal(
                 if end <= page_data.len() {
                     page_data[start..end].copy_from_slice(&raw_data);
                 }
+
+                // Offline reads prefer the parsed msq constants over page
+                // data (read_const_values checks tune.constants first), so
+                // keep them in sync or every toolbar op silently reverts on
+                // the next read while a connected ECU has already taken the
+                // write. Same invariant PR #59 established for
+                // update_table_data; these internal helpers were missed.
+                tune.constants.insert(
+                    constant.name.clone(),
+                    libretune_core::tune::TuneValue::Array(flat_values.clone()),
+                );
             }
             *state.tune_modified.lock().await = true;
         }
@@ -483,6 +494,15 @@ pub(crate) async fn update_constant_array_internal(
                 if end <= page_data.len() {
                     page_data[start..end].copy_from_slice(&raw_data);
                 }
+
+                // Same tune.constants sync as above: without it, rebin_table's
+                // axis write "succeeds", the next get_table_data serves the old
+                // bins from tune.constants, and the new axis is lost — while
+                // the ECU already received it.
+                tune.constants.insert(
+                    constant.name.clone(),
+                    libretune_core::tune::TuneValue::Array(values.clone()),
+                );
             }
 
             *state.tune_modified.lock().await = true;
