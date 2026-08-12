@@ -18,10 +18,27 @@ pub struct RestorePointResponse {
 pub async fn create_restore_point(
     state: tauri::State<'_, AppState>,
 ) -> Result<RestorePointResponse, String> {
-    let proj_guard = state.current_project.lock().await;
+    // `Project::create_restore_point` serializes `project.current_tune`, but
+    // that field is only refreshed on load/save — every edit command
+    // (update_constant, update_table_data and the table-op helpers) writes
+    // `state.current_tune`, so the two diverge. Snapshotting the project copy
+    // captured the tune as it was when the project was opened, silently losing
+    // every edit made since. Observed on a bench ECU: a saved table edit
+    // (veTable[0][0]=42) was captured by the restore point as the original 37.
+    //
+    // Sync the project's tune from the authoritative in-memory tune before
+    // snapshotting so the restore point reflects what the user actually has —
+    // the same source `save_tune` writes to CurrentTune.msq.
+    let current = state.current_tune.lock().await.clone();
+
+    let mut proj_guard = state.current_project.lock().await;
     let project = proj_guard
-        .as_ref()
+        .as_mut()
         .ok_or_else(|| "No project open".to_string())?;
+
+    if let Some(tune) = current {
+        project.current_tune = Some(tune);
+    }
 
     let restore_path = project
         .create_restore_point()
