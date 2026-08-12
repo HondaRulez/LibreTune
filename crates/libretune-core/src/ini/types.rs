@@ -268,16 +268,31 @@ impl DataType {
 
         let bytes = &mut data[offset..];
         match (self, endian) {
-            (DataType::U08 | DataType::Bits, _) => bytes[0] = value as u8,
-            (DataType::S08, _) => bytes[0] = value as i8 as u8,
-            (DataType::U16, Endianness::Big) => BigEndian::write_u16(bytes, value as u16),
-            (DataType::U16, Endianness::Little) => LittleEndian::write_u16(bytes, value as u16),
-            (DataType::S16, Endianness::Big) => BigEndian::write_i16(bytes, value as i16),
-            (DataType::S16, Endianness::Little) => LittleEndian::write_i16(bytes, value as i16),
-            (DataType::U32, Endianness::Big) => BigEndian::write_u32(bytes, value as u32),
-            (DataType::U32, Endianness::Little) => LittleEndian::write_u32(bytes, value as u32),
-            (DataType::S32, Endianness::Big) => BigEndian::write_i32(bytes, value as i32),
-            (DataType::S32, Endianness::Little) => LittleEndian::write_i32(bytes, value as i32),
+            // Integer types round to the nearest raw count rather than
+            // truncating. Display-to-raw conversions land just below whole
+            // numbers whenever scale is not binary-exact (14.7 / 0.1 =
+            // 146.99999999999997), and `as` truncation then stores raw-1: a
+            // one-count quantization loss on the first write of any such
+            // value (observed live: stoich 14.7 saved as 14.6, AFR cells
+            // 12.6 reloading as 12.5).
+            (DataType::U08 | DataType::Bits, _) => bytes[0] = value.round() as u8,
+            (DataType::S08, _) => bytes[0] = value.round() as i8 as u8,
+            (DataType::U16, Endianness::Big) => BigEndian::write_u16(bytes, value.round() as u16),
+            (DataType::U16, Endianness::Little) => {
+                LittleEndian::write_u16(bytes, value.round() as u16)
+            }
+            (DataType::S16, Endianness::Big) => BigEndian::write_i16(bytes, value.round() as i16),
+            (DataType::S16, Endianness::Little) => {
+                LittleEndian::write_i16(bytes, value.round() as i16)
+            }
+            (DataType::U32, Endianness::Big) => BigEndian::write_u32(bytes, value.round() as u32),
+            (DataType::U32, Endianness::Little) => {
+                LittleEndian::write_u32(bytes, value.round() as u32)
+            }
+            (DataType::S32, Endianness::Big) => BigEndian::write_i32(bytes, value.round() as i32),
+            (DataType::S32, Endianness::Little) => {
+                LittleEndian::write_i32(bytes, value.round() as i32)
+            }
             (DataType::F32, Endianness::Big) => BigEndian::write_f32(bytes, value as f32),
             (DataType::F32, Endianness::Little) => LittleEndian::write_f32(bytes, value as f32),
             (DataType::F64, Endianness::Big) => BigEndian::write_f64(bytes, value),
