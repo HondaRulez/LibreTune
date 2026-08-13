@@ -111,7 +111,7 @@ interface AutoTuneAuthorityLimits {
   max_value: number;
 }
 
-type AutoTuneLoadSource = 'map' | 'maf';
+type AutoTuneLoadSource = 'map' | 'maf' | 'tps';
 
 /**
  * Heat map data for a single table cell.
@@ -250,6 +250,16 @@ export function AutoTune({ tableName: initialTableName = '', onClose, isConnecte
     return lower.includes('maf') || lower.includes('airmass') || lower.includes('airflow');
   }, []);
 
+  // Detect a throttle-position (Alpha-N / ITB) load channel from an INI
+  // channel name or label. Mirrors isMafChannelName. A TPS-based VE table has
+  // its load (Y) axis indexed by throttle opening, so live data must be
+  // attributed by TPS instead of MAP/MAF (issue #132).
+  const isTpsChannelName = useCallback((name?: string | null) => {
+    if (!name) return false;
+    const lower = name.toLowerCase();
+    return lower === 'tps' || lower === 'tp' || lower === 'throttle' || lower.includes('tps') || lower.includes('throttle');
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -353,10 +363,18 @@ export function AutoTune({ tableName: initialTableName = '', onClose, isConnecte
 
   useEffect(() => {
     if (!tableData || isRunning) return;
-    if (isMafChannelName(tableData.y_output_channel) && loadSource !== 'maf') {
+    // Auto-detect the load source from the selected table's Y-axis output
+    // channel when the user hasn't already picked one. TPS (Alpha-N / ITB) is
+    // checked first because a TPS channel name like "tps" would not otherwise
+    // match MAF and would silently stay on the wrong MAP source (issue #132).
+    const yChan = tableData.y_output_channel;
+    if (isTpsChannelName(yChan) && loadSource !== 'tps') {
+      setLoadSource('tps');
+      setLoadSourceHint('Throttle (TPS/Alpha-N) load axis detected.');
+    } else if (isMafChannelName(yChan) && loadSource !== 'maf') {
       setLoadSource('maf');
     }
-  }, [isMafChannelName, isRunning, loadSource, tableData]);
+  }, [isMafChannelName, isTpsChannelName, isRunning, loadSource, tableData]);
 
   useEffect(() => {
     if (loadSource !== 'maf') {
@@ -893,6 +911,7 @@ export function AutoTune({ tableName: initialTableName = '', onClose, isConnecte
               >
                 <option value="map">MAP (Speed Density)</option>
                 <option value="maf">MAF</option>
+                <option value="tps">TPS (Alpha-N / ITB)</option>
               </select>
             </div>
             {loadSourceHint && <div className="autotune-hint">{loadSourceHint}</div>}

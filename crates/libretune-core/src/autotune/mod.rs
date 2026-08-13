@@ -1018,4 +1018,59 @@ mod tests {
 
         assert!(!state.passes_filters(&point, &filters));
     }
+
+    /// Regression test for issue #132: on an Alpha-N / ITB tune the VE table's
+    /// load (Y) axis is throttle position, not manifold pressure. The caller
+    /// (realtime_stream) must therefore set `VEDataPoint.load = tps` so samples
+    /// are attributed to the correct cell. This test fixes the contract: a
+    /// point with `load = 75` against TPS bins `[0, 25, 50, 75, 100]` lands in
+    /// Y cell 3, regardless of `map`/`maf` (which are irrelevant for Alpha-N).
+    #[test]
+    fn tps_load_axis_attributes_to_correct_cell() {
+        let mut state = AutoTuneState::new();
+        // Disable strict lambda-delay matching: the point of this test is the
+        // load-axis attribution, not exhaust-transport correlation. With strict
+        // off, the current cell is used as the fallback when no delayed match
+        // exists.
+        state.set_strict_lambda_match(false);
+        state.start();
+
+        let settings = AutoTuneSettings::default(); // lambda_delay_ms = 0 (auto curve)
+        let mut filters = AutoTuneFilters::default();
+        filters.min_clt = 0.0; // accept the sample regardless of warm-up state
+        let authority = AutoTuneAuthorityLimits::default();
+
+        // X = rpm bins, Y = throttle-position bins (0–100 %), as an Alpha-N
+        // VE table would define them.
+        let x_bins = vec![1000.0, 2000.0, 3000.0, 4000.0];
+        let y_bins = vec![0.0, 25.0, 50.0, 75.0, 100.0];
+
+        // Engine at 3000 rpm, 75 % throttle. MAP is meaningless for Alpha-N
+        // (set to 0 to prove it isn't used); `load` carries the TPS value.
+        let point = VEDataPoint {
+            rpm: 3000.0,
+            map: 0.0,   // intentionally zero — Alpha-N ignores MAP
+            maf: 0.0,   // no MAF either
+            load: 75.0, // <- the throttle value the caller put here
+            afr: 14.7,
+            ve: 80.0,
+            clt: 85.0,
+            tps: 75.0,
+            tps_rate: 0.0,
+            accel_enrich_active: Some(false),
+            timestamp_ms: 1000,
+            ..Default::default()
+        };
+
+        state.add_data_point(point, &x_bins, &y_bins, &settings, &filters, &authority);
+
+        let recs = state.get_recommendations();
+        assert_eq!(recs.len(), 1, "exactly one cell should have been hit");
+
+        let r = &recs[0];
+        // rpm 3000 -> X bin index 2 ; throttle 75 % -> Y bin index 3.
+        assert_eq!(r.cell_x, 2, "rpm 3000 should map to X bin 2");
+        assert_eq!(r.cell_y, 3, "75%% throttle should map to Y bin 3");
+        assert!(r.hit_count >= 1);
+    }
 }

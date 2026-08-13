@@ -247,6 +247,21 @@ pub(crate) async fn feed_autotune_data(
         .copied()
         .unwrap_or(0.0);
 
+    // TPS is read here (before load_value) so a TPS/Alpha-N load source can use
+    // it as the load axis. It is also reused below for transient (tps_rate)
+    // detection, so this is the single source of truth for the throttle value.
+    let tps = data
+        .get("tps")
+        .or_else(|| data.get("TPS"))
+        .or_else(|| data.get("tpsValue"))
+        .copied()
+        .unwrap_or(0.0);
+
+    // The load value selects which Y-axis (load) cell a sample is attributed
+    // to. For MAP (speed-density) it's manifold pressure; for MAF it's mass
+    // airflow; for TPS (Alpha-N / ITB) it's throttle opening %. Using the wrong
+    // source here mismatches live data against the table's Y bins — the root
+    // cause of "AutoTune isn't working" on TPS-based tunes (issue #132).
     let load_value = match config.load_source {
         AutoTuneLoadSource::Map => map,
         AutoTuneLoadSource::Maf => {
@@ -256,6 +271,7 @@ pub(crate) async fn feed_autotune_data(
                 map
             }
         }
+        AutoTuneLoadSource::Tps => tps,
     };
 
     let afr = data
@@ -283,12 +299,7 @@ pub(crate) async fn feed_autotune_data(
         .copied()
         .unwrap_or(0.0);
 
-    let tps = data
-        .get("tps")
-        .or_else(|| data.get("TPS"))
-        .or_else(|| data.get("tpsValue"))
-        .copied()
-        .unwrap_or(0.0);
+    // `tps` was read above (before load_value) so a TPS load source can use it.
 
     // Calculate TPS rate (%/sec) based on time delta
     let tps_rate =
