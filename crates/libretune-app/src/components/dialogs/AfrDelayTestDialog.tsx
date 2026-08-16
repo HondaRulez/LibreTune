@@ -15,6 +15,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { AlertTriangle, Play, Square } from 'lucide-react';
 import './AfrDelayTestDialog.css';
+import DelayTraceOverlay, { DelayTrace, TracePoint } from './DelayTraceOverlay';
 
 interface Progress {
   phase: string;
@@ -27,6 +28,8 @@ interface Progress {
   measuredRpm?: number;
   measuredLoad?: number;
   rejection?: string;
+  trace?: TracePoint[];
+  unusable?: boolean;
 }
 
 interface DelayCell {
@@ -64,6 +67,10 @@ export const AfrDelayTestDialog: React.FC<Props> = ({ isOpen, onClose }) => {
   // so a run left going for a whole drive fills the map far better than any
   // fixed count taken at one operating point.
   const [continuous, setContinuous] = useState(false);
+  // Every step's trace, kept so they can be overlaid. A single step cannot be
+  // timed - the scatter is larger than the response - so the reading only
+  // means anything once they are stacked.
+  const [traces, setTraces] = useState<DelayTrace[]>([]);
 
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -80,6 +87,13 @@ export const AfrDelayTestDialog: React.FC<Props> = ({ isOpen, onClose }) => {
   useEffect(() => {
     const un = listen<Progress>('afr_delay_test:progress', (e) => {
       setProgress(e.payload);
+      if (e.payload.trace?.length) {
+        setTraces((prev) => [
+          ...prev,
+          { step: e.payload.step, points: e.payload.trace as TracePoint[],
+            unusable: Boolean(e.payload.unusable) },
+        ]);
+      }
       // A settling event carries this step's measurement (or rejection) —
       // refresh the aggregate table so the grid fills in live.
       if (e.payload.phase === 'settling' || e.payload.phase === 'complete') {
@@ -103,6 +117,7 @@ export const AfrDelayTestDialog: React.FC<Props> = ({ isOpen, onClose }) => {
   const start = useCallback(async () => {
     setError(null);
     setResult(null);
+    setTraces([]);
     setRunning(true);
     try {
       const summary = await invoke<string>('run_afr_delay_test', {
@@ -264,6 +279,11 @@ export const AfrDelayTestDialog: React.FC<Props> = ({ isOpen, onClose }) => {
             </table>
           </div>
         )}
+
+        <div className="afr-delay-overlay-section">
+          <h3>AFR response</h3>
+          <DelayTraceOverlay traces={traces} />
+        </div>
 
         {result && <div className="afr-delay-result">{result}</div>}
         {error && (

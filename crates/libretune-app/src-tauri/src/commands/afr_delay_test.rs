@@ -63,6 +63,14 @@ const MIN_STEP_PERCENT: f64 = 3.0;
 /// ran 20 while the dialog still quoted the time for 100.
 const MAX_REPEATS: u32 = 200;
 
+/// Throttle movement above which a step is not measuring transport.
+///
+/// A moving throttle changes the mixture for its own reasons and drags accel
+/// enrichment along with it. On a real 59-minute drive this and the fuel-cut
+/// test together disqualified 44 of 141 steps; the remaining 97 gave a
+/// coherent flow-scaled curve where the unfiltered set gave 52-2979 ms.
+const TPS_DOT_LIMIT: f64 = 10.0;
+
 /// Bounds on how long a step is held, in milliseconds.
 const MIN_HOLD_MS: u64 = 500;
 const MAX_HOLD_MS: u64 = 5_000;
@@ -85,6 +93,17 @@ const WUE_CONSTANT: &str = "wueRates";
 const WUE_LAST_SLOT: usize = 9;
 /// Realtime channel reporting the WUE multiplier the ECU is applying now.
 const WUE_CHANNEL: &str = "warmupEnrich";
+
+/// One sample of a step's trace, as the UI plots it. `t_ms` is relative to the
+/// step anchor, so traces from different steps overlay directly.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TracePoint {
+    pub t_ms: i64,
+    pub afr: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pw: Option<f64>,
+}
 
 /// Progress event emitted to the frontend during a delay-test run (as
 /// `afr_delay_test:progress`). `phase` is a coarse stage label —
@@ -112,6 +131,15 @@ pub struct DelayTestProgress {
     /// Why no delay was measured for this step (operator-facing label).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rejection: Option<String>,
+    /// The step's AFR/pulse-width trace, times relative to the anchor, so the
+    /// UI can overlay it on the ones before it. Present on "settling" only.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub trace: Vec<TracePoint>,
+    /// True when the ECU was cutting fuel, or the throttle moving faster than
+    /// TPS_DOT_LIMIT, anywhere in the window - the trace is drawn but excluded
+    /// from the statistics.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub unusable: bool,
 }
 
 impl DelayTestProgress {
@@ -134,6 +162,8 @@ impl DelayTestProgress {
             measured_rpm: None,
             measured_load: None,
             rejection: None,
+            trace: Vec::new(),
+            unusable: false,
         }
     }
 }
@@ -197,6 +227,33 @@ struct SampleChannels {
     /// The ECU-reported WUE multiplier — used to gate on the warm plateau and
     /// to anchor t0 at the moment the ECU actually applied the step.
     wue: Option<String>,
+    /// Injector pulse width: the fuel the engine actually received, as opposed
+    /// to the multiplier we asked for. Overlaying it against AFR is how the
+    /// delay is read by eye, and it is the honest t0 - the commanded step and
+    /// the delivered step are not the same instant.
+    pw: Option<String>,
+    /// Deceleration fuel cut and throttle rate. A step measured while the ECU
+    /// is cutting fuel, or while the throttle is moving, is not measuring
+    /// transport; both are recorded so the trace can be marked unusable.
+    dfco: Option<String>,
+    tps_dot: Option<String>,
+}
+
+/// What was true at each sampled instant besides AFR: the fuel actually
+/// delivered, and whether the moment was valid to measure at all.
+struct SampleContext {
+    pw: Option<f64>,
+    dfco: bool,
+    tps_dot: f64,
+}
+
+/// One window's samples: AFR for the delay extraction, and the matching
+/// context for the plot and the validity test. Kept together so the two can
+/// never drift out of step - they are pushed as a pair.
+#[derive(Default)]
+struct StepSamples {
+    afr: Vec<AfrSample>,
+    ctx: Vec<SampleContext>,
 }
 
 fn resolve_sample_channels(
@@ -221,6 +278,9 @@ fn resolve_sample_channels(
         .or_else(|| find_exact("lambda"))
         .or_else(|| find_exact("o2"))?;
     Some(SampleChannels {
+        pw: find_exact("pulseWidth").or_else(|| find_exact("pw")),
+        dfco: find_exact("DFCOOn").or_else(|| find_exact("dfco")),
+        tps_dot: find_exact("TPSdot").or_else(|| find_exact("tpsDot")),
         afr,
         rpm: find_exact("rpm"),
         // MAP in kPa preferred as the load axis; TPS is the fallback.
@@ -308,7 +368,7 @@ async fn sample_window(
     epoch: Instant,
     channels: Option<&SampleChannels>,
     total_ms: u64,
-    out: &mut Vec<AfrSample>,
+    out: &mut StepSamples,
     last_point: &mut (Option<f64>, Option<f64>),
     // When set: (threshold, slot for first crossing time). The ECU's reported
     // WUE multiplier crossing the threshold marks the instant the step was
@@ -330,7 +390,21 @@ async fn sample_window(
             {
                 let t_ms = epoch.elapsed().as_millis() as u64;
                 if let Some(afr) = snap.get(&ch.afr) {
-                    out.push(AfrSample { t_ms, afr: *afr });
+                    out.afr.push(AfrSample { t_ms, afr: *afr });
+                    out.ctx.push(SampleContext {
+                        pw: ch.pw.as_ref().and_then(|k| snap.get(k)).copied(),
+                        dfco: ch
+                            .dfco
+                            .as_ref()
+                            .and_then(|k| snap.get(k))
+                            .is_some_and(|v| *v > 0.5),
+                        tps_dot: ch
+                            .tps_dot
+                            .as_ref()
+                            .and_then(|k| snap.get(k))
+                            .copied()
+                            .unwrap_or(0.0),
+                    });
                 }
                 if let Some(rpm_key) = &ch.rpm {
                     if let Some(v) = snap.get(rpm_key) {
@@ -522,7 +596,7 @@ pub async fn run_afr_delay_test(
 
         // Baseline trace for this step's delay extraction (abort-aware, like
         // every other wait in the run).
-        let mut pre = Vec::new();
+        let mut pre = StepSamples::default();
         let mut point = (None, None);
         if sample_window(
             &state,
@@ -563,7 +637,7 @@ pub async fn run_afr_delay_test(
         // Abort-aware hold, sampling AFR throughout: an abort mid-hold falls
         // straight through to the restore below, so the enrichment is cut
         // short rather than held for the remainder of `hold_ms`.
-        let mut post = Vec::new();
+        let mut post = StepSamples::default();
         let aborted_mid_hold = sample_window(
             &state,
             epoch,
@@ -593,10 +667,35 @@ pub async fn run_afr_delay_test(
 
         // Extract this step's transport delay from the sampled traces.
         let measurement = if channels.is_some() {
-            Some(detect_delay(anchor_ms, &pre, &post))
+            Some(detect_delay(anchor_ms, &pre.afr, &post.afr))
         } else {
             None
         };
+
+        // The step's trace, for the UI to overlay on the ones before it.
+        // Times are relative to the anchor so steps taken at different moments
+        // line up, and pulse width rides along because the delay is read from
+        // where AFR moves relative to where the FUEL moved - the commanded step
+        // and the delivered step are not the same instant.
+        let trace: Vec<TracePoint> = pre
+            .afr
+            .iter()
+            .chain(post.afr.iter())
+            .zip(pre.ctx.iter().chain(post.ctx.iter()))
+            .map(|(s, c)| TracePoint {
+                t_ms: s.t_ms as i64 - anchor_ms as i64,
+                afr: s.afr,
+                pw: c.pw,
+            })
+            .collect();
+        // A step taken while fuel was cut, or while the throttle was moving,
+        // is not measuring transport. Mark it so the UI can draw it greyed and
+        // leave it out of the statistics rather than silently discarding it.
+        let unusable = pre
+            .ctx
+            .iter()
+            .chain(post.ctx.iter())
+            .any(|c| c.dfco || c.tps_dot.abs() > TPS_DOT_LIMIT);
 
         let mut settling = DelayTestProgress::plain(
             "settling",
@@ -606,6 +705,8 @@ pub async fn run_afr_delay_test(
             baseline,
             format!("step {step}/{repeats} done, settling"),
         );
+        settling.trace = trace;
+        settling.unusable = unusable;
         match measurement {
             Some(Ok(m)) => {
                 let (rpm, load) = point;
