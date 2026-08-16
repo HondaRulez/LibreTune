@@ -164,7 +164,6 @@ pub fn is_tps_channel_name(name: &str) -> bool {
 /// AutoTune configuration stored when tuning session starts
 #[derive(Clone)]
 pub struct AutoTuneConfig {
-    #[allow(dead_code)]
     pub table_name: String,
     /// Signature of the ECU definition this session's bins/tables were
     /// resolved against. If the loaded definition changes (e.g. reconnect to
