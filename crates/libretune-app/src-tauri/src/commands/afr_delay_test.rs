@@ -384,8 +384,20 @@ pub async fn run_afr_delay_test(
     let step_percent = step_percent.abs().clamp(MIN_STEP_PERCENT, MAX_STEP_PERCENT);
     let hold_ms = hold_ms.clamp(MIN_HOLD_MS, MAX_HOLD_MS);
     let settle_ms = settle_ms.clamp(MIN_HOLD_MS, MAX_HOLD_MS * 2);
+    // `repeats == 0` means run until the operator stops it. Delay resolution
+    // comes from the number of events in each rpm/load bin, not from the sample
+    // rate - bootstrapping a real drive put a 34-event bin at +/-20 ms and a
+    // 10-event bin at +/-80 ms - so a long run that keeps stepping while the
+    // car is driven normally fills the map far better than a fixed batch.
+    let continuous = repeats == 0;
     let requested_repeats = repeats;
-    let repeats = repeats.clamp(1, MAX_REPEATS);
+    let repeats = if continuous {
+        u32::MAX
+    } else {
+        repeats.clamp(1, MAX_REPEATS)
+    };
+    // What the UI is told the total is; 0 reads as "unbounded" there.
+    let reported_total = if continuous { 0 } else { repeats };
 
     // Baseline = the tune's warm-plateau WUE value (the INI mandates 100).
     // Reading it up front also fails the run early if the ECU is unreachable,
@@ -449,10 +461,15 @@ pub async fn run_afr_delay_test(
 
     // If the request was trimmed, say so here rather than quietly running
     // fewer steps than the operator asked for and than the UI estimated.
-    let clamp_note = if requested_repeats > repeats {
+    let clamp_note = if !continuous && requested_repeats > repeats {
         format!(" (asked for {requested_repeats}, capped at {repeats})")
     } else {
         String::new()
+    };
+    let run_len = if continuous {
+        "running until stopped".to_string()
+    } else {
+        format!("{repeats} steps{clamp_note}")
     };
 
     emit(
@@ -465,7 +482,7 @@ pub async fn run_afr_delay_test(
             baseline,
             format!(
                 "WUE step {baseline:.0}% -> {enriched:.0}% ({step_percent:.1}% richer), \
-                 {repeats} steps{clamp_note}, {hold_ms} ms hold. \
+                 {run_len}, {hold_ms} ms hold. \
                  One byte, RAM only, never burned."
             ),
         ),
@@ -496,7 +513,7 @@ pub async fn run_afr_delay_test(
             DelayTestProgress::plain(
                 "enriching",
                 step,
-                repeats,
+                reported_total,
                 enriched,
                 baseline,
                 format!("step {step}/{repeats}: hold steady"),
@@ -584,7 +601,7 @@ pub async fn run_afr_delay_test(
         let mut settling = DelayTestProgress::plain(
             "settling",
             step,
-            repeats,
+            reported_total,
             baseline,
             baseline,
             format!("step {step}/{repeats} done, settling"),

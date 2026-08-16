@@ -59,6 +59,11 @@ export const AfrDelayTestDialog: React.FC<Props> = ({ isOpen, onClose }) => {
   const [holdMs, setHoldMs] = useState(2000);
   const [settleMs, setSettleMs] = useState(3000);
   const [repeats, setRepeats] = useState(5);
+  // Run until stopped rather than for a fixed batch. Delay resolution comes
+  // from how many events land in each rpm/load bin, not from the sample rate,
+  // so a run left going for a whole drive fills the map far better than any
+  // fixed count taken at one operating point.
+  const [continuous, setContinuous] = useState(false);
 
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -101,7 +106,8 @@ export const AfrDelayTestDialog: React.FC<Props> = ({ isOpen, onClose }) => {
     setRunning(true);
     try {
       const summary = await invoke<string>('run_afr_delay_test', {
-        stepPercent, holdMs, settleMs, repeats,
+        stepPercent, holdMs, settleMs,
+        repeats: continuous ? 0 : repeats,
       });
       setResult(summary);
     } catch (e) {
@@ -112,7 +118,7 @@ export const AfrDelayTestDialog: React.FC<Props> = ({ isOpen, onClose }) => {
     } finally {
       setRunning(false);
     }
-  }, [stepPercent, holdMs, settleMs, repeats]);
+  }, [stepPercent, holdMs, settleMs, repeats, continuous]);
 
   const abort = useCallback(async () => {
     try { await invoke('abort_afr_delay_test'); } catch { /* best effort */ }
@@ -121,6 +127,7 @@ export const AfrDelayTestDialog: React.FC<Props> = ({ isOpen, onClose }) => {
   if (!isOpen) return null;
 
   const estSeconds = Math.round((repeats * (holdMs + settleMs)) / 1000);
+  const stepsPerMinute = Math.round(60000 / (holdMs + settleMs));
 
   return (
     <div className="dialog-overlay" onClick={running ? undefined : onClose}>
@@ -171,15 +178,24 @@ export const AfrDelayTestDialog: React.FC<Props> = ({ isOpen, onClose }) => {
           <label>
             Repeats
             <input type="number" min={1} max={200} step={1} value={repeats}
-              disabled={running}
+              disabled={running || continuous}
               onChange={(e) => setRepeats(Number(e.target.value))} />
             <span className="unit">steps</span>
+          </label>
+          <label className="afr-delay-continuous">
+            <input type="checkbox" checked={continuous} disabled={running}
+              onChange={(e) => setContinuous(e.target.checked)} />
+            Run until stopped
           </label>
         </div>
 
         <p className="afr-delay-estimate">
-          Approximately {estSeconds}s. Start recording first, and keep rpm and load
-          steady throughout.
+          {continuous
+            ? `Runs until you press Stop, about ${stepsPerMinute} steps per minute. `
+              + 'Start recording first. Drive normally - every steady moment adds a '
+              + 'measurement, and the map fills where you actually drive.'
+            : `Approximately ${estSeconds}s. Start recording first, and keep rpm and `
+              + 'load steady throughout.'}
         </p>
 
         {progress && (
