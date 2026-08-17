@@ -183,6 +183,41 @@ interface VeAnalyzeConfig {
 // AutoTune Component
 // =============================================================================
 
+/// AutoTune's tuning parameters, kept across restarts.
+///
+/// These are per-engine facts the operator measures once - a transport delay of
+/// ~470 ms at idle, a coolant threshold in the INI's own units - not view state
+/// worth re-deriving each launch. They used to reset on every start, and the
+/// default `lambda_delay_ms: 0` does not mean "no delay": it means "fall back
+/// to the built-in RPM curve", which tops out at 200 ms. On a car whose real
+/// idle delay is more than twice that, samples land in the wrong cell and the
+/// low-load corrections come back inflated - which is what happened on a
+/// 59-minute drive where the delay had simply never been set.
+///
+/// Versioned so a future field change discards old state rather than merging a
+/// stale shape into a new one.
+const SETTINGS_KEY = 'libretune.autotune.settings.v1';
+
+function loadPersisted<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    // Merge over the fallback so a field added since the value was written
+    // takes its default instead of arriving undefined.
+    return { ...fallback, ...(JSON.parse(raw) as object) } as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function persist(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // localStorage unavailable - settings just won't survive the restart
+  }
+}
+
 export function AutoTune({ tableName: initialTableName = '', onClose, isConnected }: AutoTuneProps) {
   const { showToast } = useToast();
 
@@ -206,16 +241,18 @@ export function AutoTune({ tableName: initialTableName = '', onClose, isConnecte
   const [loadSourceHint, setLoadSourceHint] = useState<string | null>(null);
 
   // Settings state
-  const [settings, setSettings] = useState<AutoTuneSettings>({
+  const [settings, setSettings] = useState<AutoTuneSettings>(() =>
+    loadPersisted<AutoTuneSettings>(`${SETTINGS_KEY}.settings`, {
     target_afr: 14.7,
     algorithm: 'simple',
     update_rate_ms: 100,
     lambda_delay_ms: 0,
     lambda_delay_flow_scaled: false,
     lambda_delay_floor_ms: 120,
-  });
+  }));
 
-  const [filters, setFilters] = useState<AutoTuneFilters>({
+  const [filters, setFilters] = useState<AutoTuneFilters>(() =>
+    loadPersisted<AutoTuneFilters>(`${SETTINGS_KEY}.filters`, {
     min_rpm: 800,
     max_rpm: 7000,
     min_tps: 0,
@@ -227,14 +264,21 @@ export function AutoTune({ tableName: initialTableName = '', onClose, isConnecte
     require_steady_state: true,
     steady_state_rpm_delta: 50,
     steady_state_time_ms: 500,
-  });
+  }));
 
-  const [authority, setAuthority] = useState<AutoTuneAuthorityLimits>({
+  const [authority, setAuthority] = useState<AutoTuneAuthorityLimits>(() =>
+    loadPersisted<AutoTuneAuthorityLimits>(`${SETTINGS_KEY}.authority`, {
     max_change_per_cell: 15,
     max_total_change: 30,
     min_value: 0,
     max_value: 200,
-  });
+  }));
+
+  // Write back on change, so the next launch starts where the operator left
+  // off rather than at a default that silently disables the measured delay.
+  useEffect(() => persist(`${SETTINGS_KEY}.settings`, settings), [settings]);
+  useEffect(() => persist(`${SETTINGS_KEY}.filters`, filters), [filters]);
+  useEffect(() => persist(`${SETTINGS_KEY}.authority`, authority), [authority]);
 
   // Reference-table / lambda-match configuration (bug #2, #14).
   // Leaving the AFR table blank uses auto-discovery from the INI, falling back

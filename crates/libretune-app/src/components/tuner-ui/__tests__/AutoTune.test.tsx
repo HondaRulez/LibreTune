@@ -78,3 +78,50 @@ describe('AutoTune connection awareness', () => {
     );
   });
 });
+
+// The lambda delay is a measured per-engine fact (about 470 ms at idle on the
+// reference NA6), not view state. It used to reset on every launch, and the
+// default of 0 does not mean "no delay" - it means "fall back to the built-in
+// RPM curve", which caps at 200 ms. A whole 59-minute drive was tuned against
+// that fallback because the setting had silently reverted, inflating every
+// low-load correction.
+//
+// Queried by row rather than by label: the settings rows render <label> and
+// <input> as siblings with no htmlFor, so getByLabelText cannot resolve them.
+describe('AutoTune settings persistence', () => {
+  const delayInput = async () => {
+    const label = await screen.findByText(/(Lambda|Idle) Delay \(ms\):/);
+    const input = label.parentElement?.querySelector('input[type="number"]');
+    if (!input) throw new Error('delay input not found next to its label');
+    return input as HTMLInputElement;
+  };
+
+  beforeEach(() => {
+    localStorage.clear();
+    mockInvoke();
+  });
+
+  it('restores a measured lambda delay across a remount', async () => {
+    const { unmount } = render(
+      <ToastProvider><AutoTune isConnected onClose={() => {}} /></ToastProvider>,
+    );
+
+    const delay = await delayInput();
+    await userEvent.clear(delay);
+    await userEvent.type(delay, '470');
+    await waitFor(() =>
+      expect(localStorage.getItem('libretune.autotune.settings.v1.settings'))
+        .toContain('470'),
+    );
+
+    unmount();
+    render(<ToastProvider><AutoTune isConnected onClose={() => {}} /></ToastProvider>);
+    expect((await delayInput()).value).toBe('470');
+  });
+
+  it('falls back to defaults when stored state is corrupt', async () => {
+    localStorage.setItem('libretune.autotune.settings.v1.settings', '{not json');
+    render(<ToastProvider><AutoTune isConnected onClose={() => {}} /></ToastProvider>);
+    expect((await delayInput()).value).toBe('0');
+  });
+});
