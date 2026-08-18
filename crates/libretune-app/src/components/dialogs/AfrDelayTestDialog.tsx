@@ -296,7 +296,12 @@ export const AfrDelayTestDialog: React.FC<Props> = ({ isOpen, onClose }) => {
         <div className="afr-delay-actions">
           {running ? (
             <button type="button" className="danger" onClick={abort}>
-              <Square size={14} /> Abort and restore
+              {/* "Stop", not "Abort": the copy above promises a Stop button,
+                  and this ends the run cleanly - the WUE slot is restored and
+                  every measurement collected so far is kept. "Abort" reads as
+                  "discard what you have", which is the opposite of what it
+                  does, and on a continuous run that is the ONLY way to finish. */}
+              <Square size={14} /> Stop and restore
             </button>
           ) : (
             <>

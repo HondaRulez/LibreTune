@@ -1,5 +1,12 @@
 import React, { useMemo } from 'react';
 
+// Imported HERE, by the component that needs it, rather than from a shared
+// barrel: nothing imported that barrel, so every rule in this stylesheet was
+// dead and the traces fell back to the SVG defaults - fill black, stroke none.
+// A plot of 107 correctly-computed paths rendered as one black blob. Keeping
+// the import next to the markup it styles is what stops that recurring.
+import '../../styles/dialogs.css';
+
 /**
  * Overlaid pulse-width / AFR traces from the AFR delay test.
  *
