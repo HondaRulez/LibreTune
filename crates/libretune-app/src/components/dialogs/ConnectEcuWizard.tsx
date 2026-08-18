@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { Dialog, Button } from "../common";
 import {
   WizardTransport,
@@ -12,8 +13,28 @@ import {
   stepTitle,
   isSerialTransport,
   paramsComplete,
+  bestLocalMatch,
   WIZARD_BAUD_RATES,
+  type WizardIniMatch,
 } from "../../utils/connectEcuWizard";
+
+interface ConnectResult {
+  signature: string;
+}
+interface OnlineIniEntry {
+  source: string;
+  name: string;
+  signature: string | null;
+  download_url: string;
+  repo_path: string;
+  size: number | null;
+}
+/** The INI the wizard has resolved for the ECU (from a local, online or manual source). */
+interface ResolvedIni {
+  path: string;
+  name: string;
+  source: string;
+}
 
 interface ConnectEcuWizardProps {
   isOpen: boolean;
@@ -21,15 +42,14 @@ interface ConnectEcuWizardProps {
 }
 
 /**
- * Connect-ECU wizard — Phase 1 skeleton.
+ * Connect-ECU wizard.
  *
- * Provides the guided multi-step shell (transport → params → connect → detect →
- * resolve INI → name). Navigation and the offline branch are fully wired and
- * unit-tested (`utils/connectEcuWizard.ts`); the per-step content is filled in
- * by later phases, which will reuse the existing `ConnectionDialog`,
- * `connect_to_ecu`, `search_online_inis` / `download_ini`, `import_ini` and
- * project-creation flows. Steps that aren't implemented yet show a clear
- * placeholder so the flow is navigable end-to-end.
+ * Guided flow: transport → connection params → connect & read signature →
+ * resolve the INI definition (auto local match → online search/download →
+ * manual upload) → name the project. Reuses existing backend commands
+ * (`get_serial_ports`, `connect_to_ecu`, `find_matching_inis`,
+ * `search_online_inis` / `download_ini`, `import_ini`). Project creation is the
+ * remaining step (Phase 4); the offline branch skips straight to naming.
  */
 export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardProps) {
   const [transport, setTransport] = useState<WizardTransport | null>(null);
@@ -59,11 +79,112 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
     }
   }
 
+  // Connect + detect (Phase 3).
+  const [connecting, setConnecting] = useState(false);
+  const [signature, setSignature] = useState<string | null>(null);
+  const [connectError, setConnectError] = useState<string | null>(null);
+
+  // Resolve INI (Phase 3).
+  const [resolving, setResolving] = useState(false);
+  const [localMatches, setLocalMatches] = useState<WizardIniMatch[]>([]);
+  const [onlineResults, setOnlineResults] = useState<OnlineIniEntry[]>([]);
+  const [resolvedIni, setResolvedIni] = useState<ResolvedIni | null>(null);
+  const [resolveBusy, setResolveBusy] = useState<string | null>(null);
+
   // Scan serial ports when entering the params step for a serial transport.
   useEffect(() => {
     if (step === "params" && isSerialTransport(transport)) void scanPorts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, transport]);
+
+  async function connectAndDetect() {
+    setConnecting(true);
+    setConnectError(null);
+    setSignature(null);
+    try {
+      const result = await invoke<ConnectResult>("connect_to_ecu", {
+        connectionType: transport === "wifi" ? "Tcp" : "Serial",
+        portName: isSerialTransport(transport) ? port : "",
+        baudRate: baud,
+        tcpHost: transport === "wifi" ? host : null,
+        tcpPort: transport === "wifi" ? tcpPort : null,
+      });
+      setSignature(result.signature);
+    } catch (e) {
+      setConnectError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setConnecting(false);
+    }
+  }
+
+  // Auto-connect when entering the connect step.
+  useEffect(() => {
+    if (step === "connect" && !connecting && signature === null && connectError === null) {
+      void connectAndDetect();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
+
+  async function resolveIni(sig: string) {
+    setResolving(true);
+    setLocalMatches([]);
+    setOnlineResults([]);
+    try {
+      const [local, online] = await Promise.all([
+        invoke<WizardIniMatch[]>("find_matching_inis", { ecuSignature: sig }).catch(() => []),
+        invoke<OnlineIniEntry[]>("search_online_inis", { signature: sig }).catch(() => []),
+      ]);
+      setLocalMatches(local);
+      setOnlineResults(online);
+      // Auto-select the best local match, if any.
+      const best = bestLocalMatch(local);
+      if (best) setResolvedIni({ path: best.path, name: best.name, source: "local" });
+    } finally {
+      setResolving(false);
+    }
+  }
+
+  // Kick off INI resolution when entering the resolve step (needs a signature).
+  useEffect(() => {
+    if (step === "resolveIni" && signature && !resolving && localMatches.length === 0 && onlineResults.length === 0) {
+      void resolveIni(signature);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, signature]);
+
+  async function downloadOnline(entry: OnlineIniEntry) {
+    setResolveBusy(entry.download_url);
+    try {
+      const path = await invoke<string>("download_ini", {
+        downloadUrl: entry.download_url,
+        name: entry.name,
+        source: entry.source,
+      });
+      setResolvedIni({ path, name: entry.name, source: entry.source });
+    } catch {
+      /* surfaced via lack of selection */
+    } finally {
+      setResolveBusy(null);
+    }
+  }
+
+  async function pickManualIni() {
+    const selected = await openFileDialog({
+      filters: [{ name: "INI definition", extensions: ["ini"] }],
+    });
+    if (!selected || Array.isArray(selected)) return;
+    setResolveBusy("manual");
+    try {
+      const entry = await invoke<{ path: string; name: string }>("import_ini", {
+        sourcePath: selected,
+      });
+      setResolvedIni({ path: entry.path, name: entry.name, source: "manual" });
+    } catch {
+      /* ignore */
+    } finally {
+      setResolveBusy(null);
+    }
+  }
 
   const steps = wizardSteps(transport);
   const stepIndex = steps.indexOf(step);
@@ -73,7 +194,11 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
       ? transport !== null
       : step === "params"
         ? paramsComplete(transport, params)
-        : true;
+        : step === "connect"
+          ? signature !== null
+          : step === "resolveIni"
+            ? resolvedIni !== null
+            : true;
 
   function reset() {
     setTransport(null);
@@ -82,6 +207,12 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
     setPorts([]);
     setPort("");
     setHost("");
+    setConnecting(false);
+    setSignature(null);
+    setConnectError(null);
+    setLocalMatches([]);
+    setOnlineResults([]);
+    setResolvedIni(null);
   }
   function handleClose() {
     reset();
@@ -187,17 +318,79 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
         )}
 
         {step === "connect" && (
-          <PlaceholderStep
-            phase="Phase 3"
-            text="Connects (connect_to_ecu) and reads the ECU firmware signature."
-          />
+          <div>
+            {connecting && <div style={{ opacity: 0.8 }}>Connecting and reading the ECU signature…</div>}
+            {signature && !connecting && (
+              <div style={{ color: "var(--color-success, #2a2)" }}>
+                ✓ ECU detected. Signature:
+                <div style={{ fontFamily: "monospace", marginTop: 4, wordBreak: "break-all" }}>{signature}</div>
+              </div>
+            )}
+            {connectError && !connecting && (
+              <div>
+                <div style={{ color: "var(--color-error, #d33)" }}>Could not connect: {connectError}</div>
+                <Button variant="secondary" onClick={connectAndDetect} style={{ marginTop: "0.5rem" }}>
+                  Retry
+                </Button>
+              </div>
+            )}
+          </div>
         )}
 
         {step === "resolveIni" && (
-          <PlaceholderStep
-            phase="Phase 3"
-            text="Resolves the INI definition automatically: local match by signature → online search/download → manual upload fallback."
-          />
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            {resolving && <div style={{ opacity: 0.8 }}>Looking for a matching definition…</div>}
+
+            {resolvedIni && (
+              <div style={{ color: "var(--color-success, #2a2)" }}>
+                ✓ Using <b>{resolvedIni.name}</b> ({resolvedIni.source}).
+              </div>
+            )}
+
+            {localMatches.length > 0 && (
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>Local matches</div>
+                {localMatches.map((m) => (
+                  <div key={m.path} style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0" }}>
+                    <span style={{ flex: 1 }}>
+                      {m.name} <span style={{ opacity: 0.6, fontSize: 12 }}>({m.match_type})</span>
+                    </span>
+                    <Button variant="secondary" onClick={() => setResolvedIni({ path: m.path, name: m.name, source: "local" })}>
+                      Use
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {onlineResults.length > 0 && (
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>Online</div>
+                {onlineResults.slice(0, 8).map((e) => (
+                  <div key={e.download_url} style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0" }}>
+                    <span style={{ flex: 1, wordBreak: "break-all" }}>
+                      {e.name} <span style={{ opacity: 0.6, fontSize: 12 }}>({e.source})</span>
+                    </span>
+                    <Button variant="secondary" onClick={() => downloadOnline(e)} disabled={resolveBusy !== null}>
+                      {resolveBusy === e.download_url ? "Downloading…" : "Download & use"}
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {!resolving && localMatches.length === 0 && onlineResults.length === 0 && (
+              <div style={{ opacity: 0.8 }}>
+                No matching definition found locally or online. Upload the <code>.ini</code> from your ECU bundle.
+              </div>
+            )}
+
+            <div>
+              <Button variant="secondary" onClick={pickManualIni} disabled={resolveBusy === "manual"}>
+                {resolveBusy === "manual" ? "Importing…" : "Choose .ini file manually…"}
+              </Button>
+            </div>
+          </div>
         )}
 
         {step === "name" && (
@@ -246,21 +439,5 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
         )}
       </Dialog.Footer>
     </Dialog>
-  );
-}
-
-function PlaceholderStep({ phase, text }: { phase: string; text: string }) {
-  return (
-    <div
-      style={{
-        border: "1px dashed var(--color-border, #8884)",
-        borderRadius: 6,
-        padding: "1rem",
-        opacity: 0.85,
-      }}
-    >
-      <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>Coming in {phase}</div>
-      <div style={{ fontSize: 13 }}>{text}</div>
-    </div>
   );
 }

@@ -8,7 +8,9 @@ import {
   stepTitle,
   isSerialTransport,
   paramsComplete,
+  bestLocalMatch,
   type WizardStep,
+  type WizardIniMatch,
 } from "../connectEcuWizard";
 
 describe("wizardSteps", () => {
@@ -81,6 +83,29 @@ describe("paramsComplete", () => {
 
   it("needs nothing for offline", () => {
     expect(paramsComplete("offline", base)).toBe(true);
+  });
+});
+
+describe("bestLocalMatch", () => {
+  const m = (name: string, match_type: WizardIniMatch["match_type"]): WizardIniMatch => ({
+    path: `/${name}.ini`,
+    name,
+    signature: name,
+    match_type,
+  });
+
+  it("prefers an exact match over partials", () => {
+    const matches = [m("a", "partial"), m("b", "exact"), m("c", "partial")];
+    expect(bestLocalMatch(matches)?.name).toBe("b");
+  });
+
+  it("falls back to the first partial match", () => {
+    expect(bestLocalMatch([m("a", "partial"), m("b", "partial")])?.name).toBe("a");
+  });
+
+  it("never auto-selects a full mismatch, and handles empty", () => {
+    expect(bestLocalMatch([m("a", "mismatch")])).toBeNull();
+    expect(bestLocalMatch([])).toBeNull();
   });
 });
 

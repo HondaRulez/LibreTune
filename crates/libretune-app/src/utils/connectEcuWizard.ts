@@ -61,6 +61,26 @@ export function paramsComplete(
   return true;
 }
 
+/** A local INI candidate matched against the ECU signature. */
+export interface WizardIniMatch {
+  path: string;
+  name: string;
+  signature: string;
+  match_type: "exact" | "partial" | "mismatch";
+}
+
+/**
+ * Pick the best local INI for a signature: an exact match wins, otherwise the
+ * first partial match. Full mismatches are never auto-selected.
+ */
+export function bestLocalMatch(matches: WizardIniMatch[]): WizardIniMatch | null {
+  return (
+    matches.find((m) => m.match_type === "exact") ??
+    matches.find((m) => m.match_type === "partial") ??
+    null
+  );
+}
+
 /** The step after `current`, or `current` itself when already at the last step. */
 export function nextStep(current: WizardStep, transport: WizardTransport | null): WizardStep {
   const steps = wizardSteps(transport);
