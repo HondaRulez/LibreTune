@@ -353,7 +353,10 @@ fn test_interpolate_cells_single_row_is_linear_not_nan() {
 
     let result = interpolate_cells(&z_values, selected_cells);
 
-    assert!(result[0].iter().all(|v| v.is_finite()), "no NaN/Inf allowed");
+    assert!(
+        result[0].iter().all(|v| v.is_finite()),
+        "no NaN/Inf allowed"
+    );
     assert!((result[0][0] - 10.0).abs() < 1e-9);
     assert!((result[0][1] - 20.0).abs() < 1e-9);
     assert!((result[0][2] - 30.0).abs() < 1e-9);
