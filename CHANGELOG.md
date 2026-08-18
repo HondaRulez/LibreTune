@@ -13,6 +13,16 @@ relevant.
 
 ## [Unreleased]
 
+### 2026-08-18 — Spark generator: combustion chamber & boost (psi)
+
+#### Added
+- The ignition generator now also accounts for **combustion chamber design**
+  (open chamber / 2-valve quench / multi-valve swirl) via the new
+  `EngineSpec::combustion_chamber`, folded into `max_spark_advance` (slower
+  burn → more advance). The Generate dialog exposes it for ignition tables.
+- Boost is now entered as **gauge psi** in the Generate dialog (converted to
+  absolute kPa internally), matching TunerStudio's spark generator inputs.
+
 ### 2026-08-17 — Per-table generator ("Generate…" in the table editor)
 
 #### Added

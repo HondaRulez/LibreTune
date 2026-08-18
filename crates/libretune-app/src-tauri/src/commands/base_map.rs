@@ -73,6 +73,7 @@ pub async fn generate_base_map(
         target_wot_afr,
         octane: None,
         compression_ratio: None,
+        combustion_chamber: None,
     };
 
     let base_map = libretune_core::basemap::generator::generate_base_map(&spec);

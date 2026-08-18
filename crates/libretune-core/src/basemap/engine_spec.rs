@@ -83,6 +83,20 @@ pub enum IgnitionMode {
     Distributor,
 }
 
+/// Combustion chamber design, which sets flame-travel speed and therefore how
+/// much spark advance the engine wants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CombustionChamber {
+    /// Older open chamber — slower burn, wants more advance.
+    OpenChamber,
+    /// 2-valve head with quench — moderate burn (baseline).
+    #[default]
+    QuenchTwoValve,
+    /// Multi-valve head with swirl/tumble — fast burn, wants less advance.
+    SwirlMultiValve,
+}
+
 /// Complete engine specification for base map generation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineSpec {
@@ -134,6 +148,10 @@ pub struct EngineSpec {
     /// less advance to stay out of knock. `None` → treated as ~10.0:1.
     #[serde(default)]
     pub compression_ratio: Option<f64>,
+
+    /// Combustion chamber design (flame speed). `None` → 2-valve quench baseline.
+    #[serde(default)]
+    pub combustion_chamber: Option<CombustionChamber>,
 }
 
 impl Default for EngineSpec {
@@ -153,6 +171,7 @@ impl Default for EngineSpec {
             target_wot_afr: None,
             octane: None,
             compression_ratio: None,
+            combustion_chamber: None,
         }
     }
 }
@@ -235,6 +254,12 @@ impl EngineSpec {
         // Compression ratio relative to 10.0:1 (higher CR → less advance).
         let cr = self.compression_ratio.unwrap_or(10.0);
         adv += ((10.0 - cr) * 1.5).clamp(-8.0, 6.0);
+        // Combustion chamber flame speed: slower burn wants more advance.
+        adv += match self.combustion_chamber.unwrap_or_default() {
+            CombustionChamber::OpenChamber => 2.0,
+            CombustionChamber::QuenchTwoValve => 0.0,
+            CombustionChamber::SwirlMultiValve => -2.0,
+        };
         if matches!(self.stroke_type, StrokeType::TwoStroke) {
             adv -= 6.0;
         }

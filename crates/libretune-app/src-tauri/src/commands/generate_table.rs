@@ -98,6 +98,7 @@ pub async fn generate_table_values(
     target_wot_afr: Option<f64>,
     octane: Option<f64>,
     compression_ratio: Option<f64>,
+    combustion_chamber: Option<String>,
     rebuild_axes: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     use libretune_core::basemap::generator::{
@@ -105,7 +106,8 @@ pub async fn generate_table_values(
         generate_ve_table,
     };
     use libretune_core::basemap::{
-        Aspiration, EngineSpec, FuelType, IgnitionMode, InjectionMode, StrokeType,
+        Aspiration, CombustionChamber, EngineSpec, FuelType, IgnitionMode, InjectionMode,
+        StrokeType,
     };
 
     if rpm_bins.is_empty() || load_bins.is_empty() {
@@ -170,6 +172,16 @@ pub async fn generate_table_values(
         _ => return Err(format!("Unknown ignition mode: {}", ignition_mode)),
     };
 
+    let chamber = match combustion_chamber.as_deref().map(str::to_lowercase).as_deref() {
+        Some("open_chamber") | Some("open") => Some(CombustionChamber::OpenChamber),
+        Some("quench_two_valve") | Some("quench") => Some(CombustionChamber::QuenchTwoValve),
+        Some("swirl_multi_valve") | Some("swirl") => Some(CombustionChamber::SwirlMultiValve),
+        Some(other) if !other.is_empty() => {
+            return Err(format!("Unknown combustion chamber: {}", other))
+        }
+        _ => None,
+    };
+
     let spec = EngineSpec {
         cylinder_count,
         displacement_cc,
@@ -185,6 +197,7 @@ pub async fn generate_table_values(
         target_wot_afr,
         octane,
         compression_ratio,
+        combustion_chamber: chamber,
     };
 
     // Optionally rebuild the axes from idle/redline (and load range) so the RPM

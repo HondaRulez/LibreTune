@@ -52,6 +52,7 @@ export default function GenerateTableDialog({
   const [wotAfr, setWotAfr] = useState<string>("");
   const [octane, setOctane] = useState<string>("93");
   const [compressionRatio, setCompressionRatio] = useState<string>("10.5");
+  const [combustionChamber, setCombustionChamber] = useState("quench_two_valve");
   const [rebuildAxes, setRebuildAxes] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -73,12 +74,15 @@ export default function GenerateTableDialog({
         strokeType,
         idleRpm,
         redlineRpm,
-        boostTargetKpa: isBoosted && boostKpa ? parseFloat(boostKpa) : null,
+        // Boost entered in psi (gauge); convert to absolute kPa for the model.
+        boostTargetKpa:
+          isBoosted && boostKpa ? 101.325 + parseFloat(boostKpa) * 6.89476 : null,
         targetWotAfr: wotAfr ? parseFloat(wotAfr) : null,
-        // Spark-map knock model (ignition only): octane + compression ratio.
+        // Spark-map knock model (ignition only).
         octane: kind === "ignition" && octane ? parseFloat(octane) : null,
         compressionRatio:
           kind === "ignition" && compressionRatio ? parseFloat(compressionRatio) : null,
+        combustionChamber: kind === "ignition" ? combustionChamber : null,
         rebuildAxes,
         // Required by the command but not used by these generators — sensible
         // defaults keep the dialog focused on what actually changes the map.
@@ -195,15 +199,32 @@ export default function GenerateTableDialog({
           </FormField>
 
           {isBoosted && (
-            <FormField label="Boost target (kPa abs)">
+            <FormField label="Max boost (psi)">
               {(id) => (
                 <input
                   id={id}
                   type="number"
+                  step="0.5"
                   value={boostKpa}
-                  placeholder="200"
+                  placeholder="15"
                   onChange={(e) => setBoostKpa(e.target.value)}
                 />
+              )}
+            </FormField>
+          )}
+
+          {kind === "ignition" && (
+            <FormField label="Combustion chamber">
+              {(id) => (
+                <select
+                  id={id}
+                  value={combustionChamber}
+                  onChange={(e) => setCombustionChamber(e.target.value)}
+                >
+                  <option value="open_chamber">Open chamber (more advance)</option>
+                  <option value="quench_two_valve">2-valve quench (typical)</option>
+                  <option value="swirl_multi_valve">Multi-valve swirl (less advance)</option>
+                </select>
               )}
             </FormField>
           )}
