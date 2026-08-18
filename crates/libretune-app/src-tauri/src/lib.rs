@@ -59,7 +59,6 @@ use commands::autotune_misc::{
 };
 use commands::available_inis::get_available_inis;
 use commands::base_map::generate_base_map;
-use commands::generate_table::generate_table_values;
 use commands::cache_status::{get_table_info, get_tune_cache_status};
 use commands::channels::{
     get_available_channels, get_output_channel_status, get_status_bar_defaults,
@@ -97,6 +96,7 @@ use commands::firmware_update::{
     get_firmware_flasher_info, get_firmware_update_guidance, recover_ecu_firmware_dfu,
     release_serial_port_blockers, suggest_firmware_companion, update_ecu_firmware,
 };
+use commands::generate_table::generate_table_values;
 use commands::get_table_data::get_table_data;
 use commands::git::{
     git_checkout, git_commit, git_create_branch, git_current_branch, git_diff, git_has_changes,

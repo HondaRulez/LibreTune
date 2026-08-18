@@ -172,7 +172,11 @@ pub async fn generate_table_values(
         _ => return Err(format!("Unknown ignition mode: {}", ignition_mode)),
     };
 
-    let chamber = match combustion_chamber.as_deref().map(str::to_lowercase).as_deref() {
+    let chamber = match combustion_chamber
+        .as_deref()
+        .map(str::to_lowercase)
+        .as_deref()
+    {
         Some("open_chamber") | Some("open") => Some(CombustionChamber::OpenChamber),
         Some("quench_two_valve") | Some("quench") => Some(CombustionChamber::QuenchTwoValve),
         Some("swirl_multi_valve") | Some("swirl") => Some(CombustionChamber::SwirlMultiValve),
