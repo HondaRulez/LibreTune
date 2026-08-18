@@ -120,6 +120,7 @@ function AppContent() {
   const [availableProjects, setAvailableProjects] = useState<ProjectInfo[]>([]);
   const [repositoryInis, setRepositoryInis] = useState<IniEntry[]>([]);
   const [newProjectDialogOpen, setNewProjectDialogOpen] = useState(false);
+  const [onlineIniDialogOpen, setOnlineIniDialogOpen] = useState(false);
   const [baseMapDialogOpen, setBaseMapDialogOpen] = useState(false);
 
   // Connection state
@@ -1425,6 +1426,7 @@ function AppContent() {
     sidebarVisible, showEcuMenus: showEcuMenusInMenubar, tabs, openTarget, handleStdTarget, openHelpTopic, showToast,
     closeProject, handleCreateRestorePoint,
     setNewProjectDialogOpen, setImportProjectOpen, setSaveDialogOpen, setLoadDialogOpen,
+    setOnlineIniDialogOpen,
     setBurnDialogOpen, setFirmwareUpdateDialogOpen, setRestorePointsOpen, setTuneHistoryOpen, setSettingsDialogOpen,
     setMathChannelsDialogOpen, setAfrDelayTestOpen, setBaseMapDialogOpen, setTableComparisonOpen,
     setTuneFileDiffOpen, setDynoOverlayOpen, setPluginPanelOpen, agentPanelVisible, setAgentPanelVisible, setConnectionDialogOpen,
@@ -1687,6 +1689,8 @@ function AppContent() {
         setConnectionRuntimePacketMode={setConnectionRuntimePacketMode}
         newProjectDialogOpen={newProjectDialogOpen}
         setNewProjectDialogOpen={setNewProjectDialogOpen}
+        onlineIniDialogOpen={onlineIniDialogOpen}
+        setOnlineIniDialogOpen={setOnlineIniDialogOpen}
         repositoryInis={repositoryInis}
         setRepositoryInis={setRepositoryInis}
         createProject={createProject}

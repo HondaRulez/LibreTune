@@ -38,6 +38,7 @@ export interface BuildMenuItemsDeps {
   setImportProjectOpen: (open: boolean) => void;
   setSaveDialogOpen: (open: boolean) => void;
   setLoadDialogOpen: (open: boolean) => void;
+  setOnlineIniDialogOpen: (open: boolean) => void;
   setBurnDialogOpen: (open: boolean) => void;
   refreshTuneModified?: () => void | Promise<void>;
   setFirmwareUpdateDialogOpen: (open: boolean) => void;
@@ -77,6 +78,7 @@ export function buildMenuItems(deps: BuildMenuItemsDeps): TunerMenuItem[] {
     sidebarVisible, showEcuMenus, tabs, openTarget, handleStdTarget, openHelpTopic, showToast,
     closeProject, handleCreateRestorePoint,
     setNewProjectDialogOpen, setImportProjectOpen, setSaveDialogOpen, setLoadDialogOpen,
+    setOnlineIniDialogOpen,
     setBurnDialogOpen, setFirmwareUpdateDialogOpen, setRestorePointsOpen, setTuneHistoryOpen, setSettingsDialogOpen,
     setMathChannelsDialogOpen, setAfrDelayTestOpen, setBaseMapDialogOpen, setTableComparisonOpen,
     setTuneFileDiffOpen, setDynoOverlayOpen, setPluginPanelOpen, agentPanelVisible, setAgentPanelVisible, setConnectionDialogOpen,
@@ -88,6 +90,7 @@ export function buildMenuItems(deps: BuildMenuItemsDeps): TunerMenuItem[] {
     ? [
         { id: "new-project", label: t('file.newProject'), onClick: () => setNewProjectDialogOpen(true) },
         { id: "import-project", label: t('file.importProject'), onClick: () => setImportProjectOpen(true) },
+        { id: "search-ini-online", label: "Search for INI Online…", onClick: () => setOnlineIniDialogOpen(true) },
         { id: "close-project", label: t('file.closeProject'), onClick: closeProject },
         { id: "sep1", label: "", separator: true },
         { id: "save", label: t('file.saveTune'), onClick: () => setSaveDialogOpen(true) },
@@ -105,6 +108,7 @@ export function buildMenuItems(deps: BuildMenuItemsDeps): TunerMenuItem[] {
     : [
         { id: "new-project", label: t('file.newProject'), onClick: () => setNewProjectDialogOpen(true) },
         { id: "import-project", label: t('file.importProject'), onClick: () => setImportProjectOpen(true) },
+        { id: "search-ini-online", label: "Search for INI Online…", onClick: () => setOnlineIniDialogOpen(true) },
         { id: "sep1", label: "", separator: true },
         { id: "settings", label: t('file.settings'), onClick: () => setSettingsDialogOpen(true) },
         { id: "sep2", label: "", separator: true },
