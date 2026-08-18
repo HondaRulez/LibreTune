@@ -15,6 +15,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { AlertTriangle, Play, Square } from 'lucide-react';
 import './AfrDelayTestDialog.css';
+import DelayTraceOverlay, { DelayTrace, TracePoint } from './DelayTraceOverlay';
 
 interface Progress {
   phase: string;
@@ -27,6 +28,8 @@ interface Progress {
   measuredRpm?: number;
   measuredLoad?: number;
   rejection?: string;
+  trace?: TracePoint[];
+  unusable?: boolean;
 }
 
 interface DelayCell {
@@ -59,6 +62,15 @@ export const AfrDelayTestDialog: React.FC<Props> = ({ isOpen, onClose }) => {
   const [holdMs, setHoldMs] = useState(2000);
   const [settleMs, setSettleMs] = useState(3000);
   const [repeats, setRepeats] = useState(5);
+  // Run until stopped rather than for a fixed batch. Delay resolution comes
+  // from how many events land in each rpm/load bin, not from the sample rate,
+  // so a run left going for a whole drive fills the map far better than any
+  // fixed count taken at one operating point.
+  const [continuous, setContinuous] = useState(false);
+  // Every step's trace, kept so they can be overlaid. A single step cannot be
+  // timed - the scatter is larger than the response - so the reading only
+  // means anything once they are stacked.
+  const [traces, setTraces] = useState<DelayTrace[]>([]);
 
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -75,6 +87,13 @@ export const AfrDelayTestDialog: React.FC<Props> = ({ isOpen, onClose }) => {
   useEffect(() => {
     const un = listen<Progress>('afr_delay_test:progress', (e) => {
       setProgress(e.payload);
+      if (e.payload.trace?.length) {
+        setTraces((prev) => [
+          ...prev,
+          { step: e.payload.step, points: e.payload.trace as TracePoint[],
+            unusable: Boolean(e.payload.unusable) },
+        ]);
+      }
       // A settling event carries this step's measurement (or rejection) —
       // refresh the aggregate table so the grid fills in live.
       if (e.payload.phase === 'settling' || e.payload.phase === 'complete') {
@@ -98,10 +117,12 @@ export const AfrDelayTestDialog: React.FC<Props> = ({ isOpen, onClose }) => {
   const start = useCallback(async () => {
     setError(null);
     setResult(null);
+    setTraces([]);
     setRunning(true);
     try {
       const summary = await invoke<string>('run_afr_delay_test', {
-        stepPercent, holdMs, settleMs, repeats,
+        stepPercent, holdMs, settleMs,
+        repeats: continuous ? 0 : repeats,
       });
       setResult(summary);
     } catch (e) {
@@ -112,7 +133,7 @@ export const AfrDelayTestDialog: React.FC<Props> = ({ isOpen, onClose }) => {
     } finally {
       setRunning(false);
     }
-  }, [stepPercent, holdMs, settleMs, repeats]);
+  }, [stepPercent, holdMs, settleMs, repeats, continuous]);
 
   const abort = useCallback(async () => {
     try { await invoke('abort_afr_delay_test'); } catch { /* best effort */ }
@@ -121,6 +142,7 @@ export const AfrDelayTestDialog: React.FC<Props> = ({ isOpen, onClose }) => {
   if (!isOpen) return null;
 
   const estSeconds = Math.round((repeats * (holdMs + settleMs)) / 1000);
+  const stepsPerMinute = Math.round(60000 / (holdMs + settleMs));
 
   return (
     <div className="dialog-overlay" onClick={running ? undefined : onClose}>
@@ -171,15 +193,24 @@ export const AfrDelayTestDialog: React.FC<Props> = ({ isOpen, onClose }) => {
           <label>
             Repeats
             <input type="number" min={1} max={200} step={1} value={repeats}
-              disabled={running}
+              disabled={running || continuous}
               onChange={(e) => setRepeats(Number(e.target.value))} />
             <span className="unit">steps</span>
+          </label>
+          <label className="afr-delay-continuous">
+            <input type="checkbox" checked={continuous} disabled={running}
+              onChange={(e) => setContinuous(e.target.checked)} />
+            Run until stopped
           </label>
         </div>
 
         <p className="afr-delay-estimate">
-          Approximately {estSeconds}s. Start recording first, and keep rpm and load
-          steady throughout.
+          {continuous
+            ? `Runs until you press Stop, about ${stepsPerMinute} steps per minute. `
+              + 'Start recording first. Drive normally - every steady moment adds a '
+              + 'measurement, and the map fills where you actually drive.'
+            : `Approximately ${estSeconds}s. Start recording first, and keep rpm and `
+              + 'load steady throughout.'}
         </p>
 
         {progress && (
@@ -249,6 +280,11 @@ export const AfrDelayTestDialog: React.FC<Props> = ({ isOpen, onClose }) => {
           </div>
         )}
 
+        <div className="afr-delay-overlay-section">
+          <h3>AFR response</h3>
+          <DelayTraceOverlay traces={traces} />
+        </div>
+
         {result && <div className="afr-delay-result">{result}</div>}
         {error && (
           <div className="afr-delay-error">
@@ -260,7 +296,12 @@ export const AfrDelayTestDialog: React.FC<Props> = ({ isOpen, onClose }) => {
         <div className="afr-delay-actions">
           {running ? (
             <button type="button" className="danger" onClick={abort}>
-              <Square size={14} /> Abort and restore
+              {/* "Stop", not "Abort": the copy above promises a Stop button,
+                  and this ends the run cleanly - the WUE slot is restored and
+                  every measurement collected so far is kept. "Abort" reads as
+                  "discard what you have", which is the opposite of what it
+                  does, and on a continuous run that is the ONLY way to finish. */}
+              <Square size={14} /> Stop and restore
             </button>
           ) : (
             <>
