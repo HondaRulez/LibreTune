@@ -10,6 +10,7 @@ import {
   paramsComplete,
   bestLocalMatch,
   deriveOnlineIniUrl,
+  sanitizeSignature,
   type WizardStep,
   type WizardIniMatch,
 } from "../connectEcuWizard";
@@ -127,6 +128,28 @@ describe("deriveOnlineIniUrl", () => {
     expect(deriveOnlineIniUrl("speeduino 202409")).toBeNull();
     expect(deriveOnlineIniUrl("MS2Extra comms342aM")).toBeNull();
     expect(deriveOnlineIniUrl("")).toBeNull();
+  });
+});
+
+describe("sanitizeSignature", () => {
+  const NUL = String.fromCharCode(0);
+  const CR = String.fromCharCode(13);
+  const LF = String.fromCharCode(10);
+  const US = String.fromCharCode(31);
+  it("strips trailing NUL and control bytes and trims", () => {
+    expect(sanitizeSignature("rusEFI master.2026.08.17.mre_f4.2452009527" + NUL)).toBe(
+      "rusEFI master.2026.08.17.mre_f4.2452009527",
+    );
+    expect(sanitizeSignature("  speeduino 202409" + CR + LF)).toBe("speeduino 202409");
+    expect(sanitizeSignature("a" + NUL + "b" + US + "c")).toBe("abc");
+  });
+});
+
+describe("deriveOnlineIniUrl with a padded signature", () => {
+  it("ignores a trailing NUL so the URL stays valid", () => {
+    expect(deriveOnlineIniUrl("rusEFI master.2026.08.17.mre_f4.2452009527" + String.fromCharCode(0))).toBe(
+      "https://rusefi.com/online/ini/rusefi/master/2026/08/17/mre_f4/2452009527.ini",
+    );
   });
 });
 

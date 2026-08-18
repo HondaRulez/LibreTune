@@ -15,6 +15,7 @@ import {
   paramsComplete,
   bestLocalMatch,
   deriveOnlineIniUrl,
+  sanitizeSignature,
   WIZARD_BAUD_RATES,
   type WizardIniMatch,
 } from "../../utils/connectEcuWizard";
@@ -115,7 +116,7 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
         tcpHost: transport === "wifi" ? host : null,
         tcpPort: transport === "wifi" ? tcpPort : null,
       });
-      setSignature(result.signature);
+      setSignature(sanitizeSignature(result.signature));
     } catch (e) {
       setConnectError(e instanceof Error ? e.message : String(e));
     } finally {
