@@ -13,6 +13,32 @@ relevant.
 
 ## [Unreleased]
 
+### 2026-08-17 — Table "Interpolate" NaN fix on single-row/column selections
+
+#### Fixed
+- **`Interpolate` (bilinear, the `/` key) corrupted a whole row or column with
+  `NaN`** — `interpolate_cells` computed the blend ratio as
+  `(y - min_y) / (max_y - min_y)`. When the selection was a single row or a
+  single column that denominator is `0`, and Rust evaluates `0.0 / 0.0` to
+  `NaN` (no panic), so every selected cell was silently overwritten with `NaN`.
+  Because the value could then be burned to the ECU, this was a data-corruption
+  bug, not just a display glitch. A degenerate axis is now pinned to ratio
+  `0.0`, which reduces the bilinear blend to a clean **linear** interpolation
+  along the remaining axis — matching TunerStudio's behaviour for a 1×N or N×1
+  selection. Rectangular selections are unchanged (the 3×3 centre still blends
+  to the corner mean).
+- **Out-of-bounds selections are now a guaranteed no-op** — if any of the four
+  corners falls outside the current table (e.g. a stale selection left over
+  after `rebin_table` shrank the grid) the operation returns the table
+  unmodified instead of reading past the edges.
+
+#### Added
+- Regression tests in `crates/libretune-core/tests/table_ops.rs`:
+  `test_interpolate_cells_single_row_is_linear_not_nan`,
+  `test_interpolate_cells_single_col_is_linear_not_nan`, and
+  `test_interpolate_cells_out_of_bounds_selection_is_noop`; the existing 3×3
+  test now also asserts the exact bilinear centre (`37.5`).
+
 ### 2026-08-17 — Issue #129: apply seven parsed-but-ignored .dash gauge properties at render time
 
 #### Fixed
@@ -1819,4 +1845,3 @@ This preserves only essential environment variables (PATH, HOME, DISPLAY) and re
   - ✅ AGENTS.md updated (this section)
   - ✅ All code still functional (but deprecated)
   - ⏳ Removal scheduled for after grace period (Steps 4-5)
-
