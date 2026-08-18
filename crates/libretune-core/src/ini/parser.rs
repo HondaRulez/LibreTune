@@ -104,7 +104,10 @@ impl IncludeContext {
 
 /// Parse a complete INI file into an EcuDefinition
 pub fn parse_ini(content: &str) -> Result<EcuDefinition, IniError> {
-    parse_ini_internal(content, &mut IncludeContext::new(None))
+    let mut ctx = IncludeContext::new(None);
+    let mut def = parse_ini_internal(content, &mut ctx)?;
+    def.active_symbols = ctx.defined_symbols.clone();
+    Ok(def)
 }
 
 /// Parse an INI file from a path, enabling #include directive support
@@ -115,7 +118,11 @@ pub fn parse_ini_from_path(path: &Path) -> Result<EcuDefinition, IniError> {
     let mut ctx = IncludeContext::new(Some(path));
     ctx.included_files.insert(canonical);
 
-    parse_ini_internal(&content, &mut ctx)
+    // The symbols travel with the definition: they record which arm of every
+    // `#if` this parse took, including any the INI `#set` itself.
+    let mut def = parse_ini_internal(&content, &mut ctx)?;
+    def.active_symbols = ctx.defined_symbols.clone();
+    Ok(def)
 }
 
 /// Read an INI file with encoding fallback (UTF-8 first, then Windows-1252).
@@ -3250,6 +3257,71 @@ mod tests {
         set_default_symbols(Vec::<String>::new());
     }
 
+    /// A definition records which arm of every `#if` it took, so a later
+    /// change to the seed cannot move the answer underneath it.
+    ///
+    /// The gauge label is rendered from this ("TEMP" becomes degC or degF)
+    /// while the value comes from arithmetic baked in at parse time. When the
+    /// label was read from the process-wide seed instead, saving the units
+    /// preference mid-session relabelled every temperature to degC while it
+    /// went on computing Fahrenheit - a gauge reading 176 degC for an 80 degC
+    /// coolant, which is worse than being imperial throughout because it looks
+    /// plausible. Keeping the answer on the definition also means this holds
+    /// with other parses running concurrently.
+    #[test]
+    fn a_definition_remembers_the_symbols_it_was_parsed_with() {
+        let ini = "[Constants]
+page = 1
+#if CELSIUS
+tempTest = scalar, U08, 0, \"C\", 1.0, -40, -40, 102.0, 0
+#else
+tempTest = scalar, U08, 0, \"F\", 1.8, -22.23, -40, 215.0, 0
+#endif
+";
+
+        set_default_symbols(vec!["CELSIUS".to_string()]);
+        let celsius_def = parse_ini(ini).expect("parses");
+        assert_eq!(
+            celsius_def
+                .constants
+                .get("tempTest")
+                .map(|c| c.units.as_str()),
+            Some("C")
+        );
+        assert!(celsius_def.symbol_is_active("CELSIUS"));
+
+        // Change the seed WITHOUT reparsing, exactly as saving the units
+        // setting does. The definition already loaded is still the Celsius one
+        // and must keep saying so - that is what keeps its labels honest.
+        set_default_symbols(Vec::<String>::new());
+        assert!(
+            celsius_def.symbol_is_active("CELSIUS"),
+            "a loaded definition does not change units because a setting did"
+        );
+
+        // Reparsing is what makes the new seed take effect.
+        let imperial_def = parse_ini(ini).expect("parses");
+        assert_eq!(
+            imperial_def
+                .constants
+                .get("tempTest")
+                .map(|c| c.units.as_str()),
+            Some("F")
+        );
+        assert!(!imperial_def.symbol_is_active("CELSIUS"));
+        // ...and the older definition is untouched by it.
+        assert!(celsius_def.symbol_is_active("CELSIUS"));
+    }
+
+    /// Speeduino's `veAnalyzeMap` has four fields, not five.
+    ///
+    /// The fifth (activeCondition) is optional and Speeduino omits it, but the
+    /// parser required it - so the whole declaration was dropped and every
+    /// table kept `TableRole::Other`. AutoTune then could not find the AFR
+    /// target table, fell back to a flat 14.7 for every cell, and on a real
+    /// drive recommended pulling ~15% fuel out of the WOT region where the
+    /// target table asks for 12.7. On an engine without knock detection that
+    /// is an engine-damage bug, so it is pinned with the real INI's own text.
     #[test]
     fn test_strip_comment() {
         // Comments after equals sign

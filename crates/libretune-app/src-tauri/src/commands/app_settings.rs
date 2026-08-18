@@ -351,8 +351,35 @@ static PROJECT_SYMBOLS: std::sync::RwLock<Option<Vec<String>>> = std::sync::RwLo
 /// those tokens are exactly the symbols its `#if` blocks test.
 ///
 /// Must run before the INI is parsed: `#if CELSIUS` is resolved during parsing.
-pub(crate) fn seed_symbols_from_project(ini_path: &Path) {
-    let symbols = ini_path
+pub(crate) fn seed_symbols_from_project(ini_path: &Path, settings: &Settings) {
+    match project_declared_symbols(ini_path) {
+        Some(symbols) => {
+            tracing::info!(?symbols, "INI symbols taken from the project's ecuSettings");
+            if let Ok(mut guard) = PROJECT_SYMBOLS.write() {
+                *guard = Some(symbols.clone());
+            }
+            libretune_core::ini::set_default_symbols(symbols);
+        }
+        None => {
+            // This project makes no declaration, so the previous one's must be
+            // dropped: PROJECT_SYMBOLS outranks the units preference, and
+            // leaving it set means opening a Celsius project and then an
+            // undeclared one silently keeps Celsius - with no setting able to
+            // override it for the rest of the session.
+            if let Ok(mut guard) = PROJECT_SYMBOLS.write() {
+                *guard = None;
+            }
+            apply_unit_symbols(settings);
+        }
+    }
+}
+
+/// The symbols a project declares in `ecuSettings`, if it declares any.
+///
+/// Split out from the seeding so the parsing rules - pipe-separated, trailing
+/// empty token discarded - can be tested without a settings fixture.
+fn project_declared_symbols(ini_path: &Path) -> Option<Vec<String>> {
+    ini_path
         .parent()
         .map(|dir| dir.join("project.properties"))
         .filter(|p| p.exists())
@@ -364,15 +391,7 @@ pub(crate) fn seed_symbols_from_project(ini_path: &Path) {
                 .filter(|t| !t.is_empty())
                 .map(str::to_string)
                 .collect::<Vec<_>>()
-        });
-
-    if let Some(symbols) = symbols {
-        tracing::info!(?symbols, "INI symbols taken from the project's ecuSettings");
-        if let Ok(mut guard) = PROJECT_SYMBOLS.write() {
-            *guard = Some(symbols.clone());
-        }
-        libretune_core::ini::set_default_symbols(symbols);
-    }
+        })
 }
 
 /// Seed the INI preprocessor's conditional symbols.
@@ -534,7 +553,7 @@ mod tests {
         )
         .unwrap();
 
-        seed_symbols_from_project(&cfg.join("mainController.ini"));
+        seed_symbols_from_project(&cfg.join("mainController.ini"), &Settings::default());
 
         let symbols = PROJECT_SYMBOLS.read().unwrap().clone().unwrap();
         assert!(symbols.iter().any(|s| s == "CELSIUS"));
