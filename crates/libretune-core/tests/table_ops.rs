@@ -386,7 +386,7 @@ fn test_interpolate_cells_out_of_bounds_selection_is_noop() {
     let z_values = vec![vec![1.0, 2.0], vec![3.0, 4.0]];
     let selected_cells = vec![(0, 0), (0, 5), (9, 0), (9, 5)];
 
-    let result = interpolate_cells(&z_values, selected_cells.clone());
+    let result = interpolate_cells(&z_values, selected_cells);
 
     assert_eq!(result, z_values, "out-of-bounds selection must not mutate");
 }
