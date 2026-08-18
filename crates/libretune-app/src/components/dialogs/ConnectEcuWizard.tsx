@@ -14,6 +14,7 @@ import {
   isSerialTransport,
   paramsComplete,
   bestLocalMatch,
+  deriveOnlineIniUrl,
   WIZARD_BAUD_RATES,
   type WizardIniMatch,
 } from "../../utils/connectEcuWizard";
@@ -88,8 +89,7 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
   const [resolving, setResolving] = useState(false);
   const [localMatches, setLocalMatches] = useState<WizardIniMatch[]>([]);
   const [onlineResults, setOnlineResults] = useState<OnlineIniEntry[]>([]);
-  const [onlineIsBrowseAll, setOnlineIsBrowseAll] = useState(false);
-  const [onlineFilter, setOnlineFilter] = useState("");
+  const [derived, setDerived] = useState<{ url: string; status: "downloading" | "ok" | "failed" } | null>(null);
   const [resolvedIni, setResolvedIni] = useState<ResolvedIni | null>(null);
   const [resolveBusy, setResolveBusy] = useState<string | null>(null);
 
@@ -131,35 +131,54 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
     setResolving(true);
     setLocalMatches([]);
     setOnlineResults([]);
-    setOnlineIsBrowseAll(false);
+    setDerived(null);
     try {
-      const [local, online] = await Promise.all([
-        invoke<WizardIniMatch[]>("find_matching_inis", { ecuSignature: sig }).catch(() => []),
-        invoke<OnlineIniEntry[]>("search_online_inis", { signature: sig }).catch(() => []),
-      ]);
+      // 1) Local definition whose signature= matches (exact > partial).
+      const local = await invoke<WizardIniMatch[]>("find_matching_inis", { ecuSignature: sig }).catch(
+        () => [],
+      );
       setLocalMatches(local);
-      // If the signature match found nothing online, fall back to listing every
-      // available online definition so the user can browse and pick one.
-      if (online.length > 0) {
-        setOnlineResults(online);
-      } else {
-        const all = await invoke<OnlineIniEntry[]>("search_online_inis", { signature: null }).catch(
-          () => [],
-        );
-        setOnlineResults(all);
-        setOnlineIsBrowseAll(all.length > 0);
-      }
-      // Auto-select the best local match, if any.
       const best = bestLocalMatch(local);
-      if (best) setResolvedIni({ path: best.path, name: best.name, source: "local" });
+      if (best) {
+        setResolvedIni({ path: best.path, name: best.name, source: "local" });
+        return;
+      }
+
+      // 2) rusEFI/FOME: derive the exact URL from the signature and download it.
+      const url = deriveOnlineIniUrl(sig);
+      if (url) {
+        setDerived({ url, status: "downloading" });
+        try {
+          const name = url.split("/").slice(-1)[0] || "definition.ini";
+          const path = await invoke<string>("download_ini", {
+            downloadUrl: url,
+            name,
+            source: "rusefi",
+          });
+          setResolvedIni({ path, name, source: "rusEFI (auto)" });
+          setDerived({ url, status: "ok" });
+          return;
+        } catch {
+          setDerived({ url, status: "failed" });
+          // fall through to the repo search / manual upload
+        }
+      }
+
+      // 3) Other firmwares (e.g. Speeduino): match against the repo listing.
+      const online = await invoke<OnlineIniEntry[]>("search_online_inis", { signature: sig }).catch(
+        () => [],
+      );
+      setOnlineResults(online);
     } finally {
       setResolving(false);
     }
   }
 
   // Kick off INI resolution when entering the resolve step (needs a signature).
+  const [resolveTried, setResolveTried] = useState(false);
   useEffect(() => {
-    if (step === "resolveIni" && signature && !resolving && localMatches.length === 0 && onlineResults.length === 0) {
+    if (step === "resolveIni" && signature && !resolving && !resolveTried) {
+      setResolveTried(true);
       void resolveIni(signature);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -225,9 +244,9 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
     setConnectError(null);
     setLocalMatches([]);
     setOnlineResults([]);
-    setOnlineIsBrowseAll(false);
-    setOnlineFilter("");
+    setDerived(null);
     setResolvedIni(null);
+    setResolveTried(false);
   }
   function handleClose() {
     reset();
@@ -356,6 +375,17 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
           <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
             {resolving && <div style={{ opacity: 0.8 }}>Looking for a matching definition…</div>}
 
+            {derived && (
+              <div style={{ fontSize: 12, opacity: 0.85 }}>
+                {derived.status === "downloading" && "Downloading the exact rusEFI/FOME definition for this signature…"}
+                {derived.status === "failed" && (
+                  <span style={{ color: "var(--color-error, #d33)" }}>
+                    Couldn't fetch {derived.url} — falling back below.
+                  </span>
+                )}
+              </div>
+            )}
+
             {resolvedIni && (
               <div style={{ color: "var(--color-success, #2a2)" }}>
                 ✓ Using <b>{resolvedIni.name}</b> ({resolvedIni.source}).
@@ -380,50 +410,24 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
 
             {onlineResults.length > 0 && (
               <div>
-                <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                  {onlineIsBrowseAll ? "Online — no signature match, browse all" : "Online"}
-                </div>
-                {onlineIsBrowseAll && (
-                  <>
-                    <div style={{ opacity: 0.7, fontSize: 12, marginBottom: 4 }}>
-                      No definition matched your signature automatically. Pick one from the online
-                      repositories (Speeduino, rusEFI, …), or upload your ECU's <code>.ini</code> below.
-                    </div>
-                    <input
-                      type="text"
-                      value={onlineFilter}
-                      placeholder="Filter by name or source…"
-                      onChange={(e) => setOnlineFilter(e.target.value)}
-                      style={{ width: "100%", marginBottom: 4 }}
-                    />
-                  </>
-                )}
-                <div style={{ maxHeight: onlineIsBrowseAll ? "30vh" : undefined, overflowY: "auto" }}>
-                  {onlineResults
-                    .filter((e) =>
-                      !onlineFilter.trim()
-                        ? true
-                        : `${e.name} ${e.source}`.toLowerCase().includes(onlineFilter.toLowerCase()),
-                    )
-                    .slice(0, onlineIsBrowseAll ? 100 : 8)
-                    .map((e) => (
-                      <div key={e.download_url} style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0" }}>
-                        <span style={{ flex: 1, wordBreak: "break-all" }}>
-                          {e.name} <span style={{ opacity: 0.6, fontSize: 12 }}>({e.source})</span>
-                        </span>
-                        <Button variant="secondary" onClick={() => downloadOnline(e)} disabled={resolveBusy !== null}>
-                          {resolveBusy === e.download_url ? "Downloading…" : "Download & use"}
-                        </Button>
-                      </div>
-                    ))}
-                </div>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>Online matches</div>
+                {onlineResults.slice(0, 8).map((e) => (
+                  <div key={e.download_url} style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0" }}>
+                    <span style={{ flex: 1, wordBreak: "break-all" }}>
+                      {e.name} <span style={{ opacity: 0.6, fontSize: 12 }}>({e.source})</span>
+                    </span>
+                    <Button variant="secondary" onClick={() => downloadOnline(e)} disabled={resolveBusy !== null}>
+                      {resolveBusy === e.download_url ? "Downloading…" : "Download & use"}
+                    </Button>
+                  </div>
+                ))}
               </div>
             )}
 
-            {!resolving && localMatches.length === 0 && onlineResults.length === 0 && (
+            {!resolving && !resolvedIni && localMatches.length === 0 && onlineResults.length === 0 && (
               <div style={{ opacity: 0.8 }}>
-                No definitions available locally or online (check your internet connection).
-                Upload the <code>.ini</code> from your ECU bundle below.
+                No definition was resolved automatically for this signature. If you have your ECU's
+                <code>.ini</code> file, load it as a last resort.
               </div>
             )}
 

@@ -9,6 +9,7 @@ import {
   isSerialTransport,
   paramsComplete,
   bestLocalMatch,
+  deriveOnlineIniUrl,
   type WizardStep,
   type WizardIniMatch,
 } from "../connectEcuWizard";
@@ -106,6 +107,26 @@ describe("bestLocalMatch", () => {
   it("never auto-selects a full mismatch, and handles empty", () => {
     expect(bestLocalMatch([m("a", "mismatch")])).toBeNull();
     expect(bestLocalMatch([])).toBeNull();
+  });
+});
+
+describe("deriveOnlineIniUrl", () => {
+  it("derives the rusEFI URL from a signature (wiki example)", () => {
+    expect(deriveOnlineIniUrl("rusEFI master.2026.08.17.mre_f4.2452009527")).toBe(
+      "https://rusefi.com/online/ini/rusefi/master/2026/08/17/mre_f4/2452009527.ini",
+    );
+  });
+
+  it("lowercases the leading token and handles FOME", () => {
+    expect(deriveOnlineIniUrl("FOME master.2026.01.02.board")).toBe(
+      "https://rusefi.com/online/ini/fome/master/2026/01/02/board.ini",
+    );
+  });
+
+  it("returns null for non-rusEFI signatures", () => {
+    expect(deriveOnlineIniUrl("speeduino 202409")).toBeNull();
+    expect(deriveOnlineIniUrl("MS2Extra comms342aM")).toBeNull();
+    expect(deriveOnlineIniUrl("")).toBeNull();
   });
 });
 

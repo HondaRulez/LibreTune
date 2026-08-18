@@ -81,6 +81,26 @@ export function bestLocalMatch(matches: WizardIniMatch[]): WizardIniMatch | null
   );
 }
 
+/**
+ * Derive the deterministic online `.ini` URL from a firmware signature, the way
+ * rusEFI/FOME publish definitions (rusEFI wiki "INI lookup logic").
+ *
+ * The signature is lower-cased and every space and dot becomes a `/`, then
+ * appended to the rusEFI online-INI base. Example:
+ *   "rusEFI master.2026.08.17.mre_f4.2452009527"
+ *   → https://rusefi.com/online/ini/rusefi/master/2026/08/17/mre_f4/2452009527.ini
+ *
+ * Returns `null` for signatures that don't use this scheme (e.g. Speeduino,
+ * MegaSquirt), which are resolved by other means.
+ */
+export function deriveOnlineIniUrl(signature: string): string | null {
+  const sig = signature.trim();
+  const first = sig.split(/[ .]/)[0]?.toLowerCase() ?? "";
+  if (first !== "rusefi" && first !== "fome") return null;
+  const path = sig.toLowerCase().replace(/ /g, "/").replace(/\./g, "/");
+  return `https://rusefi.com/online/ini/${path}.ini`;
+}
+
 /** The step after `current`, or `current` itself when already at the last step. */
 export function nextStep(current: WizardStep, transport: WizardTransport | null): WizardStep {
   const steps = wizardSteps(transport);
