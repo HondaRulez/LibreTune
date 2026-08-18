@@ -13,6 +13,28 @@ relevant.
 
 ## [Unreleased]
 
+### 2026-08-17 — Per-table generator ("Generate…" in the table editor)
+
+#### Added
+- **Generate a single table from engine specs, TunerStudio-style.** The base-map
+  generators (VE / ignition / AFR) were previously reachable only through the
+  one-shot base-map wizard. The table editor's right-click menu now offers a
+  **"Generate <VE / Ignition / AFR Target> Table…"** action for those tables,
+  which seeds the open table over its **current axes** and applies the result as
+  a single undoable edit (nothing is burned to the ECU automatically).
+  - New Tauri command `generate_table_values(table_name, rpm_bins, load_bins, …engine spec)`
+    (`crates/libretune-app/src-tauri/src/commands/generate_table.rs`). It
+    classifies the table by its INI-derived `TableRole` and falls back to the
+    same name lists `apply_base_map` uses, then calls the existing
+    `generate_ve_table` / `generate_ignition_table` / `generate_afr_table`
+    core generators. Returns `{ table_type, z_values }`.
+  - New frontend: `GenerateTableDialog` (compact engine-spec form) and a
+    `classifyGeneratableTable` helper (`utils/tableGenerator.ts`) that gates the
+    menu affordance. The context menu shows the action only for VE/ignition/AFR
+    tables.
+  - Tests: Rust unit tests for the name/role classifiers, and vitest coverage
+    for `classifyGeneratableTable` / `generatableTableLabel`.
+
 ### 2026-08-13 — std_injection panel synthesis & offline constant reads
 
 #### Fixed
