@@ -1,0 +1,443 @@
+import { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { Dialog, Button } from "../common";
+import {
+  WizardTransport,
+  WizardStep,
+  wizardSteps,
+  nextStep,
+  prevStep,
+  isLastStep,
+  transportLabel,
+  stepTitle,
+  isSerialTransport,
+  paramsComplete,
+  bestLocalMatch,
+  WIZARD_BAUD_RATES,
+  type WizardIniMatch,
+} from "../../utils/connectEcuWizard";
+
+interface ConnectResult {
+  signature: string;
+}
+interface OnlineIniEntry {
+  source: string;
+  name: string;
+  signature: string | null;
+  download_url: string;
+  repo_path: string;
+  size: number | null;
+}
+/** The INI the wizard has resolved for the ECU (from a local, online or manual source). */
+interface ResolvedIni {
+  path: string;
+  name: string;
+  source: string;
+}
+
+interface ConnectEcuWizardProps {
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+/**
+ * Connect-ECU wizard.
+ *
+ * Guided flow: transport → connection params → connect & read signature →
+ * resolve the INI definition (auto local match → online search/download →
+ * manual upload) → name the project. Reuses existing backend commands
+ * (`get_serial_ports`, `connect_to_ecu`, `find_matching_inis`,
+ * `search_online_inis` / `download_ini`, `import_ini`). Project creation is the
+ * remaining step (Phase 4); the offline branch skips straight to naming.
+ */
+export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardProps) {
+  const [transport, setTransport] = useState<WizardTransport | null>(null);
+  const [step, setStep] = useState<WizardStep>("transport");
+  const [projectName, setProjectName] = useState("");
+
+  // Connection parameters (Phase 2).
+  const [ports, setPorts] = useState<string[]>([]);
+  const [scanningPorts, setScanningPorts] = useState(false);
+  const [port, setPort] = useState("");
+  const [baud, setBaud] = useState(115200);
+  const [host, setHost] = useState("");
+  const [tcpPort, setTcpPort] = useState(29000);
+
+  const params = { port, baud, host, tcpPort };
+
+  async function scanPorts() {
+    setScanningPorts(true);
+    try {
+      const found = await invoke<string[]>("get_serial_ports");
+      setPorts(found);
+      if (found.length > 0 && !found.includes(port)) setPort(found[0]);
+    } catch {
+      setPorts([]);
+    } finally {
+      setScanningPorts(false);
+    }
+  }
+
+  // Connect + detect (Phase 3).
+  const [connecting, setConnecting] = useState(false);
+  const [signature, setSignature] = useState<string | null>(null);
+  const [connectError, setConnectError] = useState<string | null>(null);
+
+  // Resolve INI (Phase 3).
+  const [resolving, setResolving] = useState(false);
+  const [localMatches, setLocalMatches] = useState<WizardIniMatch[]>([]);
+  const [onlineResults, setOnlineResults] = useState<OnlineIniEntry[]>([]);
+  const [resolvedIni, setResolvedIni] = useState<ResolvedIni | null>(null);
+  const [resolveBusy, setResolveBusy] = useState<string | null>(null);
+
+  // Scan serial ports when entering the params step for a serial transport.
+  useEffect(() => {
+    if (step === "params" && isSerialTransport(transport)) void scanPorts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, transport]);
+
+  async function connectAndDetect() {
+    setConnecting(true);
+    setConnectError(null);
+    setSignature(null);
+    try {
+      const result = await invoke<ConnectResult>("connect_to_ecu", {
+        connectionType: transport === "wifi" ? "Tcp" : "Serial",
+        portName: isSerialTransport(transport) ? port : "",
+        baudRate: baud,
+        tcpHost: transport === "wifi" ? host : null,
+        tcpPort: transport === "wifi" ? tcpPort : null,
+      });
+      setSignature(result.signature);
+    } catch (e) {
+      setConnectError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setConnecting(false);
+    }
+  }
+
+  // Auto-connect when entering the connect step.
+  useEffect(() => {
+    if (step === "connect" && !connecting && signature === null && connectError === null) {
+      void connectAndDetect();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
+
+  async function resolveIni(sig: string) {
+    setResolving(true);
+    setLocalMatches([]);
+    setOnlineResults([]);
+    try {
+      const [local, online] = await Promise.all([
+        invoke<WizardIniMatch[]>("find_matching_inis", { ecuSignature: sig }).catch(() => []),
+        invoke<OnlineIniEntry[]>("search_online_inis", { signature: sig }).catch(() => []),
+      ]);
+      setLocalMatches(local);
+      setOnlineResults(online);
+      // Auto-select the best local match, if any.
+      const best = bestLocalMatch(local);
+      if (best) setResolvedIni({ path: best.path, name: best.name, source: "local" });
+    } finally {
+      setResolving(false);
+    }
+  }
+
+  // Kick off INI resolution when entering the resolve step (needs a signature).
+  useEffect(() => {
+    if (step === "resolveIni" && signature && !resolving && localMatches.length === 0 && onlineResults.length === 0) {
+      void resolveIni(signature);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, signature]);
+
+  async function downloadOnline(entry: OnlineIniEntry) {
+    setResolveBusy(entry.download_url);
+    try {
+      const path = await invoke<string>("download_ini", {
+        downloadUrl: entry.download_url,
+        name: entry.name,
+        source: entry.source,
+      });
+      setResolvedIni({ path, name: entry.name, source: entry.source });
+    } catch {
+      /* surfaced via lack of selection */
+    } finally {
+      setResolveBusy(null);
+    }
+  }
+
+  async function pickManualIni() {
+    const selected = await openFileDialog({
+      filters: [{ name: "INI definition", extensions: ["ini"] }],
+    });
+    if (!selected || Array.isArray(selected)) return;
+    setResolveBusy("manual");
+    try {
+      const entry = await invoke<{ path: string; name: string }>("import_ini", {
+        sourcePath: selected,
+      });
+      setResolvedIni({ path: entry.path, name: entry.name, source: "manual" });
+    } catch {
+      /* ignore */
+    } finally {
+      setResolveBusy(null);
+    }
+  }
+
+  const steps = wizardSteps(transport);
+  const stepIndex = steps.indexOf(step);
+  const last = isLastStep(step, transport);
+  const canAdvance =
+    step === "transport"
+      ? transport !== null
+      : step === "params"
+        ? paramsComplete(transport, params)
+        : step === "connect"
+          ? signature !== null
+          : step === "resolveIni"
+            ? resolvedIni !== null
+            : true;
+
+  function reset() {
+    setTransport(null);
+    setStep("transport");
+    setProjectName("");
+    setPorts([]);
+    setPort("");
+    setHost("");
+    setConnecting(false);
+    setSignature(null);
+    setConnectError(null);
+    setLocalMatches([]);
+    setOnlineResults([]);
+    setResolvedIni(null);
+  }
+  function handleClose() {
+    reset();
+    onClose();
+  }
+
+  const transports: WizardTransport[] = ["usb", "bluetooth", "wifi", "offline"];
+
+  return (
+    <Dialog open={isOpen} onClose={handleClose} title="Connect ECU / New Project" size="md">
+      <Dialog.Body>
+        <div style={{ opacity: 0.7, fontSize: 12, marginBottom: "0.75rem" }}>
+          Step {stepIndex + 1} of {steps.length} — {stepTitle(step)}
+        </div>
+
+        {step === "transport" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+            {transports.map((t) => (
+              <label
+                key={t}
+                style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}
+              >
+                <input
+                  type="radio"
+                  name="wizard-transport"
+                  checked={transport === t}
+                  onChange={() => setTransport(t)}
+                />
+                <span>{transportLabel(t)}</span>
+              </label>
+            ))}
+          </div>
+        )}
+
+        {step === "params" && isSerialTransport(transport) && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            {transport === "bluetooth" && (
+              <p style={{ opacity: 0.7, fontSize: 12, margin: 0 }}>
+                Bluetooth ECUs appear as a serial (COM) port — pair the device in your OS
+                first, then pick its port below.
+              </p>
+            )}
+            <div>
+              <label style={{ display: "block", marginBottom: "0.25rem" }}>Port</label>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                <select
+                  value={port}
+                  onChange={(e) => setPort(e.target.value)}
+                  style={{ flex: 1 }}
+                >
+                  {ports.length === 0 ? (
+                    <option value="">No ports found</option>
+                  ) : (
+                    ports.map((p) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))
+                  )}
+                </select>
+                <Button variant="secondary" onClick={scanPorts} disabled={scanningPorts}>
+                  {scanningPorts ? "Scanning…" : "Refresh"}
+                </Button>
+              </div>
+            </div>
+            <div>
+              <label style={{ display: "block", marginBottom: "0.25rem" }}>Baud rate</label>
+              <select value={baud} onChange={(e) => setBaud(parseInt(e.target.value))}>
+                {WIZARD_BAUD_RATES.map((b) => (
+                  <option key={b} value={b}>
+                    {b}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
+
+        {step === "params" && transport === "wifi" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            <p style={{ opacity: 0.7, fontSize: 12, margin: 0 }}>
+              For a networked ECU (e.g. rusEFI over WiFi), enter its host/IP and TCP port.
+            </p>
+            <div>
+              <label style={{ display: "block", marginBottom: "0.25rem" }}>Host / IP</label>
+              <input
+                type="text"
+                value={host}
+                placeholder="192.168.4.1"
+                onChange={(e) => setHost(e.target.value)}
+                style={{ width: "100%" }}
+              />
+            </div>
+            <div>
+              <label style={{ display: "block", marginBottom: "0.25rem" }}>TCP port</label>
+              <input
+                type="number"
+                value={tcpPort}
+                onChange={(e) => setTcpPort(parseInt(e.target.value) || 0)}
+              />
+            </div>
+          </div>
+        )}
+
+        {step === "connect" && (
+          <div>
+            {connecting && <div style={{ opacity: 0.8 }}>Connecting and reading the ECU signature…</div>}
+            {signature && !connecting && (
+              <div style={{ color: "var(--color-success, #2a2)" }}>
+                ✓ ECU detected. Signature:
+                <div style={{ fontFamily: "monospace", marginTop: 4, wordBreak: "break-all" }}>{signature}</div>
+              </div>
+            )}
+            {connectError && !connecting && (
+              <div>
+                <div style={{ color: "var(--color-error, #d33)" }}>Could not connect: {connectError}</div>
+                <Button variant="secondary" onClick={connectAndDetect} style={{ marginTop: "0.5rem" }}>
+                  Retry
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {step === "resolveIni" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            {resolving && <div style={{ opacity: 0.8 }}>Looking for a matching definition…</div>}
+
+            {resolvedIni && (
+              <div style={{ color: "var(--color-success, #2a2)" }}>
+                ✓ Using <b>{resolvedIni.name}</b> ({resolvedIni.source}).
+              </div>
+            )}
+
+            {localMatches.length > 0 && (
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>Local matches</div>
+                {localMatches.map((m) => (
+                  <div key={m.path} style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0" }}>
+                    <span style={{ flex: 1 }}>
+                      {m.name} <span style={{ opacity: 0.6, fontSize: 12 }}>({m.match_type})</span>
+                    </span>
+                    <Button variant="secondary" onClick={() => setResolvedIni({ path: m.path, name: m.name, source: "local" })}>
+                      Use
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {onlineResults.length > 0 && (
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>Online</div>
+                {onlineResults.slice(0, 8).map((e) => (
+                  <div key={e.download_url} style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0" }}>
+                    <span style={{ flex: 1, wordBreak: "break-all" }}>
+                      {e.name} <span style={{ opacity: 0.6, fontSize: 12 }}>({e.source})</span>
+                    </span>
+                    <Button variant="secondary" onClick={() => downloadOnline(e)} disabled={resolveBusy !== null}>
+                      {resolveBusy === e.download_url ? "Downloading…" : "Download & use"}
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {!resolving && localMatches.length === 0 && onlineResults.length === 0 && (
+              <div style={{ opacity: 0.8 }}>
+                No matching definition found locally or online. Upload the <code>.ini</code> from your ECU bundle.
+              </div>
+            )}
+
+            <div>
+              <Button variant="secondary" onClick={pickManualIni} disabled={resolveBusy === "manual"}>
+                {resolveBusy === "manual" ? "Importing…" : "Choose .ini file manually…"}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {step === "name" && (
+          <div>
+            <label style={{ display: "block", marginBottom: "0.5rem" }}>Project name</label>
+            <input
+              type="text"
+              value={projectName}
+              placeholder="My ECU project"
+              onChange={(e) => setProjectName(e.target.value)}
+              style={{ width: "100%" }}
+            />
+            {transport === "offline" && (
+              <p style={{ opacity: 0.7, fontSize: 12, marginTop: "0.5rem" }}>
+                Offline: you'll pick an INI definition by hand (today's New Project behaviour).
+              </p>
+            )}
+            <p style={{ opacity: 0.6, fontSize: 12, marginTop: "0.75rem" }}>
+              Project creation is wired in a later phase.
+            </p>
+          </div>
+        )}
+      </Dialog.Body>
+
+      <Dialog.Footer>
+        <Button variant="secondary" onClick={handleClose}>
+          Cancel
+        </Button>
+        {stepIndex > 0 && (
+          <Button variant="secondary" onClick={() => setStep(prevStep(step, transport))}>
+            Back
+          </Button>
+        )}
+        {last ? (
+          <Button variant="primary" onClick={handleClose} disabled={!projectName.trim()}>
+            Finish
+          </Button>
+        ) : (
+          <Button
+            variant="primary"
+            onClick={() => setStep(nextStep(step, transport))}
+            disabled={!canAdvance}
+          >
+            Next
+          </Button>
+        )}
+      </Dialog.Footer>
+    </Dialog>
+  );
+}

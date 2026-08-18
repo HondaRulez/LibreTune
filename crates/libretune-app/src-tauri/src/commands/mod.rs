@@ -32,6 +32,7 @@ pub mod diagnostic_loggers;
 pub mod dyno;
 pub mod find_inis;
 pub mod firmware_update;
+pub mod generate_table;
 pub mod get_table_data;
 pub mod git;
 pub mod hotkeys;

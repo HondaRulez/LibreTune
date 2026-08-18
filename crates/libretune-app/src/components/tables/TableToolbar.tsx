@@ -13,7 +13,8 @@ import {
   Crosshair,
   Palette,
   Box,
-  Scaling
+  Scaling,
+  Wand2
 } from 'lucide-react';
 
 interface TableToolbarProps {
@@ -38,6 +39,9 @@ interface TableToolbarProps {
   onColorShadeToggle?: () => void;
   show3D?: boolean;
   onToggle3D?: () => void;
+  /** Generate the whole table from engine specs (VE/ignition/AFR only). */
+  onGenerate?: () => void;
+  generatableLabel?: string;
 }
 
 export default function TableToolbar({ 
@@ -62,6 +66,8 @@ export default function TableToolbar({
   onColorShadeToggle,
   show3D = false,
   onToggle3D,
+  onGenerate,
+  generatableLabel,
 }: TableToolbarProps) {
   return (
     <div className="ts-toolbar">
@@ -135,6 +141,16 @@ export default function TableToolbar({
             onClick={onSetSize}
           >
             <Scaling size={14} />
+          </button>
+        )}
+        {onGenerate && (
+          <button
+            className="ts-toolbar-btn"
+            title={`Generate ${generatableLabel ?? 'table'} from engine specs`}
+            onClick={onGenerate}
+          >
+            <Wand2 size={14} />
+            <span className="ts-toolbar-label">Generate</span>
           </button>
         )}
       </div>

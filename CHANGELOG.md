@@ -13,6 +13,37 @@ relevant.
 
 ## [Unreleased]
 
+### 2026-08-18 — Spark generator: combustion chamber & boost (psi)
+
+#### Added
+- The ignition generator now also accounts for **combustion chamber design**
+  (open chamber / 2-valve quench / multi-valve swirl) via the new
+  `EngineSpec::combustion_chamber`, folded into `max_spark_advance` (slower
+  burn → more advance). The Generate dialog exposes it for ignition tables.
+- Boost is now entered as **gauge psi** in the Generate dialog (converted to
+  absolute kPa internally), matching TunerStudio's spark generator inputs.
+
+### 2026-08-17 — Per-table generator ("Generate…" in the table editor)
+
+#### Added
+- **Generate a single table from engine specs, TunerStudio-style.** The base-map
+  generators (VE / ignition / AFR) were previously reachable only through the
+  one-shot base-map wizard. The table editor's right-click menu now offers a
+  **"Generate <VE / Ignition / AFR Target> Table…"** action for those tables,
+  which seeds the open table over its **current axes** and applies the result as
+  a single undoable edit (nothing is burned to the ECU automatically).
+  - New Tauri command `generate_table_values(table_name, rpm_bins, load_bins, …engine spec)`
+    (`crates/libretune-app/src-tauri/src/commands/generate_table.rs`). It
+    classifies the table by its INI-derived `TableRole` and falls back to the
+    same name lists `apply_base_map` uses, then calls the existing
+    `generate_ve_table` / `generate_ignition_table` / `generate_afr_table`
+    core generators. Returns `{ table_type, z_values }`.
+  - New frontend: `GenerateTableDialog` (compact engine-spec form) and a
+    `classifyGeneratableTable` helper (`utils/tableGenerator.ts`) that gates the
+    menu affordance. The context menu shows the action only for VE/ignition/AFR
+    tables.
+  - Tests: Rust unit tests for the name/role classifiers, and vitest coverage
+    for `classifyGeneratableTable` / `generatableTableLabel`.
 ### 2026-08-17 — Table "Interpolate" NaN fix on single-row/column selections
 
 #### Fixed
@@ -38,6 +69,52 @@ relevant.
   `test_interpolate_cells_single_col_is_linear_not_nan`, and
   `test_interpolate_cells_out_of_bounds_selection_is_noop`; the existing 3×3
   test now also asserts the exact bilinear centre (`37.5`).
+
+### 2026-08-17 — Issue #129: apply seven parsed-but-ignored .dash gauge properties at render time
+
+#### Fixed
+- **`face_angle` never shaped the gauge face** — roughly a third of stock
+  TunerStudio gauges are authored with `FaceAngle=180/182/188` (half-sweep
+  faces), but every analog gauge rendered as a full circle. New shared
+  geometry helper (`painters/gaugeGeometry.ts`, `resolveGaugeArc`) resolves
+  the effective needle sweep (clamped to the face extent — the needle never
+  travels outside the face) and the face arc (centered on the sweep, which
+  reproduces the 182/188 "sweep + margin" shapes). `analogGauge.ts` now
+  draws a sector face (wedge background, arc-band bezel, text anchored
+  outside the flat side) when `face_angle < 360`; full-circle faces render
+  exactly as before. Also corrected the Rust default/parse-fallback for
+  `FaceAngle` from 270 → 360 (stock corpus values are only 360/180/182/188;
+  TunerStudio renders absent-FaceAngle gauges as full circles, and 270
+  would have shrunk them into sectors).
+- **`history_value` never seeded the peak marker** — TunerStudio persists
+  the last peak in the file; the renderer now seeds `peakValueRef` from it
+  (clamped to range) when `peak_hold` is on (`peakTracking.ts::seedPeak`).
+- **`history_delay` never decayed the peak marker** — the peak only ever
+  ratcheted upward for the life of the gauge. New pure state machine
+  (`peakTracking.ts::nextPeakState`) ratchets upward and, once
+  `history_delay` ms elapse without a new peak, lets the marker fall back to
+  the present value. `history_delay <= 0` holds forever (semantics
+  undocumented; matches previous behavior).
+- **`default_min`/`default_max` were unreachable** — the dashboard designer's
+  property editor now shows a "Reset range to default" button when the gauge
+  carries authored defaults, restoring the TunerStudio-authored range.
+  `.dash` Min/Max and the INI range auto-sync remain authoritative at render.
+
+#### Docs
+- `gauge_style` and `needle_smoothing` are now documented as intentional
+  render-time no-ops (Rust `types.rs` + `dashTypes.ts`): `gauge_style` is
+  provenance only (painter selection is `gauge_painter`; TS styles are
+  free-form names with no in-file definition), and `needle_smoothing` is
+  uniformly 1 across the stock corpus with undocumented semantics — applying
+  it would invent behaviour (per the issue reporter's recommendation).
+
+#### Tests
+- Rust: `face_angle` parse/round-trip regression tests (PR #125 pattern)
+  incl. absent → 360 and malformed → 360 fallbacks.
+- Vitest: `gaugeGeometry.test.ts` (11 tests — full-circle passthrough,
+  180/182 sector centering, sweep clamp, ccw mirroring, garbage face values)
+  and `peakTracking.test.ts` (9 tests — seed/clamp, ratchet, hold, decay,
+  hold-forever on `<= 0`, decay clock for seeded peaks).
 
 ### 2026-08-13 — std_injection panel synthesis & offline constant reads
 
@@ -1799,4 +1876,3 @@ This preserves only essential environment variables (PATH, HOME, DISPLAY) and re
   - ✅ AGENTS.md updated (this section)
   - ✅ All code still functional (but deprecated)
   - ⏳ Removal scheduled for after grace period (Steps 4-5)
-

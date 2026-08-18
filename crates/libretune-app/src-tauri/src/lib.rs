@@ -96,6 +96,7 @@ use commands::firmware_update::{
     get_firmware_flasher_info, get_firmware_update_guidance, recover_ecu_firmware_dfu,
     release_serial_port_blockers, suggest_firmware_companion, update_ecu_firmware,
 };
+use commands::generate_table::generate_table_values;
 use commands::get_table_data::get_table_data;
 use commands::git::{
     git_checkout, git_commit, git_create_branch, git_current_branch, git_diff, git_has_changes,
@@ -415,6 +416,7 @@ pub fn run() {
             // Base map generator commands
             generate_base_map,
             apply_base_map,
+            generate_table_values,
             get_msq_info,
             delete_project,
             // INI signature management commands

@@ -8,6 +8,8 @@ import TableContextMenu from './TableContextMenu';
 import RebinDialog from '../dialogs/RebinDialog';
 import SetTableSizeDialog from '../dialogs/SetTableSizeDialog';
 import CellEditDialog from '../dialogs/CellEditDialog';
+import GenerateTableDialog from '../dialogs/GenerateTableDialog';
+import { classifyGeneratableTable, generatableTableLabel } from '../../utils/tableGenerator';
 import { Dialog, Button, FormField } from '../common';
 import type { BackendTableData, TableSizeInfo } from '../../types/app';
 import LambdaPreviewTable from './LambdaPreviewTable';
@@ -230,6 +232,11 @@ export default function TableEditor2D({
   const { settings: heatmapSettings } = useHeatmapSettings();
   const yAxisBottom = useTableYAxisBottom();
   const trailFadeSec = useTrailFadeSec();
+
+  // Whether this table can be seeded by the TunerStudio-style generator
+  // (VE / ignition / AFR target). Gates the "Generate…" context-menu action.
+  const generatableKind = useMemo(() => classifyGeneratableTable(table_name), [table_name]);
+  const [showGenerateDialog, setShowGenerateDialog] = useState(false);
 
   // Show the read-only lambda companion only for actual target-AFR tables
   // (not blend/bias tables whose values aren't AFR).
@@ -803,6 +810,19 @@ export default function TableEditor2D({
     }
   };
 
+  // Apply a freshly generated grid (from GenerateTableDialog) as a single
+  // undoable edit. This is an intentional full-table reseed, so unlike the
+  // cell operations it doesn't run the large-change guard.
+  const handleGenerateApply = (result: { zValues: number[][]; xBins?: number[]; yBins?: number[] }) => {
+    const newX = result.xBins ?? localXBins;
+    const newY = result.yBins ?? localYBins;
+    setLocalZValues(result.zValues);
+    if (result.xBins) setLocalXBins(result.xBins);
+    if (result.yBins) setLocalYBins(result.yBins);
+    onValuesChange?.(result.zValues);
+    pushHistory(result.zValues, newX, newY);
+  };
+
   const handleInterpolate = async () => {
     const previousValues = localZValues.map((row) => [...row]);
     try {
@@ -1292,6 +1312,8 @@ export default function TableEditor2D({
           onColorShadeToggle={() => setShowColorShade(!showColorShade)}
           show3D={show3D}
           onToggle3D={() => setShow3D(!show3D)}
+          onGenerate={generatableKind ? () => setShowGenerateDialog(true) : undefined}
+          generatableLabel={generatableKind ? generatableTableLabel(generatableKind) : undefined}
         />
       )}
 
@@ -1386,7 +1408,21 @@ export default function TableEditor2D({
         onCopy={() => { setContextMenu({ visible: false, x: 0, y: 0, value: 0 }); handleCopy(); }}
         onPaste={() => { setContextMenu({ visible: false, x: 0, y: 0, value: 0 }); handlePaste(); }}
         onToggleHeatmap={() => { setContextMenu({ visible: false, x: 0, y: 0, value: 0 }); setShowColorShade(prev => !prev); }}
+        onGenerate={generatableKind ? () => { setContextMenu({ visible: false, x: 0, y: 0, value: 0 }); setShowGenerateDialog(true); } : undefined}
+        generatableLabel={generatableKind ? generatableTableLabel(generatableKind) : undefined}
       />
+
+      {generatableKind && (
+        <GenerateTableDialog
+          isOpen={showGenerateDialog}
+          onClose={() => setShowGenerateDialog(false)}
+          tableName={table_name}
+          kind={generatableKind}
+          rpmBins={localXBins}
+          loadBins={localYBins}
+          onApply={handleGenerateApply}
+        />
+      )}
 
       <RebinDialog
         isOpen={rebinDialog.show}
