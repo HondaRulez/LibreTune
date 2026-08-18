@@ -454,6 +454,18 @@ fn parse_ini_internal(content: &str, ctx: &mut IncludeContext) -> Result<EcuDefi
             .and_then(|n| n.to_str()),
     );
 
+    // Roles are declared by `[VeAnalyze]`/`[WueAnalyze]`, which may sit in any
+    // file of an include tree, so they can only be resolved once everything has
+    // been merged. `depth == 0` is the outermost parse; nested calls are
+    // include files still being folded into it.
+    //
+    // Doing it here rather than in each entry point means a caller cannot
+    // forget: `infer_table_roles()` already existed and was correct, but
+    // nothing ever called it, so every table kept `TableRole::Other`.
+    if ctx.depth == 0 {
+        definition.infer_table_roles();
+    }
+
     Ok(definition)
 }
 
@@ -3000,12 +3012,25 @@ fn parse_ve_analyze_entry(def: &mut EcuDefinition, key: &str, value: &str) {
     match key_lower.as_str() {
         "veanalyzemap" => {
             // veAnalyzeMap = veTableTbl, lambdaTableTbl, lambdaValue, egoCorrectionForVeAnalyze, { 1 }
-            if parts.len() >= 5 {
+            //
+            // The fifth field, activeCondition, is OPTIONAL - Speeduino writes
+            // only four:
+            //   veAnalyzeMap = veTable1Tbl, afrTable1Tbl, afr, egoCorrection
+            //
+            // Requiring five discarded the entire declaration for every
+            // Speeduino INI, silently: no VE role, no AFR-target role, and
+            // AutoTune fell back to a flat 14.7 target for every cell. On a
+            // real drive that asked to pull ~15% fuel out of the WOT region,
+            // where the target table actually calls for 12.7.
+            if parts.len() >= 4 {
                 config.ve_table_name = parts[0].trim().to_string();
                 config.target_table_name = parts[1].trim().to_string();
                 config.lambda_channel = parts[2].trim().to_string();
                 config.ego_correction_channel = parts[3].trim().to_string();
-                config.active_condition = parts[4].trim().to_string();
+                config.active_condition = parts
+                    .get(4)
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_default();
             }
         }
         "lambdatargettables" => {
@@ -3322,6 +3347,55 @@ tempTest = scalar, U08, 0, \"F\", 1.8, -22.23, -40, 215.0, 0
     /// drive recommended pulling ~15% fuel out of the WOT region where the
     /// target table asks for 12.7. On an engine without knock detection that
     /// is an engine-damage bug, so it is pinned with the real INI's own text.
+    #[test]
+    fn ve_analyze_map_parses_speeduinos_four_field_form() {
+        let ini = "[TableEditor]
+table = veTable1Tbl, veTable1, \"VE Table\", 2
+table = afrTable1Tbl, afrTable1, \"AFR Table\", 2
+[VeAnalyze]
+veAnalyzeMap = veTable1Tbl, afrTable1Tbl, afr, egoCorrection
+";
+        let def = parse_ini(ini).expect("parses");
+        let cfg = def.ve_analyze.as_ref().expect("VeAnalyze config present");
+        assert_eq!(cfg.ve_table_name, "veTable1Tbl");
+        assert_eq!(cfg.target_table_name, "afrTable1Tbl");
+        assert_eq!(cfg.lambda_channel, "afr");
+        assert_eq!(cfg.ego_correction_channel, "egoCorrection");
+        assert_eq!(
+            cfg.active_condition, "",
+            "absent optional field stays empty"
+        );
+    }
+
+    /// Roles must be inferred by the time a caller sees the definition.
+    ///
+    /// `infer_table_roles()` was correct but called from nowhere, so every
+    /// table stayed `Other` and the AFR-target lookup could never succeed for
+    /// any INI. The fallback it dropped into guesses by name from a list
+    /// containing both `afrTable` and `lambdaTable` - which on a lambda INI
+    /// compares a ~0.88 target against a ~13 measured AFR.
+    #[test]
+    fn parsing_assigns_table_roles() {
+        let ini = "[TableEditor]
+table = veTable1Tbl, veTable1, \"VE Table\", 2
+table = afrTable1Tbl, afrTable1, \"AFR Table\", 2
+table = sparkTbl, spark, \"Spark Table\", 2
+[VeAnalyze]
+veAnalyzeMap = veTable1Tbl, afrTable1Tbl, afr, egoCorrection
+";
+        let def = parse_ini(ini).expect("parses");
+        let role = |n: &str| {
+            def.tables
+                .values()
+                .find(|t| t.name == n)
+                .map(|t| t.role)
+                .unwrap_or(crate::ini::TableRole::Other)
+        };
+        assert_eq!(role("veTable1Tbl"), crate::ini::TableRole::Ve);
+        assert_eq!(role("afrTable1Tbl"), crate::ini::TableRole::AfrTarget);
+        assert_eq!(role("sparkTbl"), crate::ini::TableRole::Ignition);
+    }
+
     #[test]
     fn test_strip_comment() {
         // Comments after equals sign
