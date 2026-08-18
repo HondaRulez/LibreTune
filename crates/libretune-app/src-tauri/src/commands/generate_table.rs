@@ -96,9 +96,13 @@ pub async fn generate_table_values(
     redline_rpm: u16,
     boost_target_kpa: Option<f64>,
     target_wot_afr: Option<f64>,
+    octane: Option<f64>,
+    compression_ratio: Option<f64>,
+    rebuild_axes: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     use libretune_core::basemap::generator::{
-        generate_afr_table, generate_ignition_table, generate_ve_table,
+        generate_afr_table, generate_ignition_table, generate_load_bins, generate_rpm_bins,
+        generate_ve_table,
     };
     use libretune_core::basemap::{
         Aspiration, EngineSpec, FuelType, IgnitionMode, InjectionMode, StrokeType,
@@ -179,17 +183,33 @@ pub async fn generate_table_values(
         redline_rpm,
         boost_target_kpa,
         target_wot_afr,
+        octane,
+        compression_ratio,
+    };
+
+    // Optionally rebuild the axes from idle/redline (and load range) so the RPM
+    // span reflects the engine spec — otherwise generate over the table's
+    // existing bins. Bin counts always match the current table dimensions.
+    let (x_bins, y_bins) = if rebuild_axes.unwrap_or(false) {
+        (
+            generate_rpm_bins(spec.idle_rpm, spec.redline_rpm, rpm_bins.len()),
+            generate_load_bins(spec.max_load_kpa(), load_bins.len()),
+        )
+    } else {
+        (rpm_bins, load_bins)
     };
 
     let z_values = match kind {
-        GeneratableKind::Ve => generate_ve_table(&spec, &rpm_bins, &load_bins),
-        GeneratableKind::Ignition => generate_ignition_table(&spec, &rpm_bins, &load_bins),
-        GeneratableKind::Afr => generate_afr_table(&spec, &rpm_bins, &load_bins),
+        GeneratableKind::Ve => generate_ve_table(&spec, &x_bins, &y_bins),
+        GeneratableKind::Ignition => generate_ignition_table(&spec, &x_bins, &y_bins),
+        GeneratableKind::Afr => generate_afr_table(&spec, &x_bins, &y_bins),
     };
 
     Ok(serde_json::json!({
         "table_type": kind.as_str(),
         "z_values": z_values,
+        "x_bins": x_bins,
+        "y_bins": y_bins,
     }))
 }
 

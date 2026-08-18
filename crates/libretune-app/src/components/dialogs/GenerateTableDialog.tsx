@@ -17,13 +17,15 @@ interface GenerateTableDialogProps {
   rpmBins: number[];
   /** The table's current Y axis (load) bins. */
   loadBins: number[];
-  /** Called with the freshly generated Z grid when the user applies. */
-  onApply: (zValues: number[][]) => void;
+  /** Called with the freshly generated grid (and optionally rebuilt axes). */
+  onApply: (result: { zValues: number[][]; xBins?: number[]; yBins?: number[] }) => void;
 }
 
 interface GenerateTableResult {
   table_type: string;
   z_values: number[][];
+  x_bins?: number[];
+  y_bins?: number[];
 }
 
 /**
@@ -48,6 +50,9 @@ export default function GenerateTableDialog({
   const [redlineRpm, setRedlineRpm] = useState(6500);
   const [boostKpa, setBoostKpa] = useState<string>("");
   const [wotAfr, setWotAfr] = useState<string>("");
+  const [octane, setOctane] = useState<string>("93");
+  const [compressionRatio, setCompressionRatio] = useState<string>("10.5");
+  const [rebuildAxes, setRebuildAxes] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -70,6 +75,11 @@ export default function GenerateTableDialog({
         redlineRpm,
         boostTargetKpa: isBoosted && boostKpa ? parseFloat(boostKpa) : null,
         targetWotAfr: wotAfr ? parseFloat(wotAfr) : null,
+        // Spark-map knock model (ignition only): octane + compression ratio.
+        octane: kind === "ignition" && octane ? parseFloat(octane) : null,
+        compressionRatio:
+          kind === "ignition" && compressionRatio ? parseFloat(compressionRatio) : null,
+        rebuildAxes,
         // Required by the command but not used by these generators — sensible
         // defaults keep the dialog focused on what actually changes the map.
         cylinderCount: 4,
@@ -83,7 +93,7 @@ export default function GenerateTableDialog({
         setError("Generator returned no data.");
         return;
       }
-      onApply(result.z_values);
+      onApply({ zValues: result.z_values, xBins: result.x_bins, yBins: result.y_bins });
       onClose();
     } catch (e) {
       setError(String(e));
@@ -212,7 +222,46 @@ export default function GenerateTableDialog({
               )}
             </FormField>
           )}
+
+          {kind === "ignition" && (
+            <FormField label="Fuel octane (AKI)">
+              {(id) => (
+                <input
+                  id={id}
+                  type="number"
+                  step="1"
+                  value={octane}
+                  placeholder="93"
+                  onChange={(e) => setOctane(e.target.value)}
+                />
+              )}
+            </FormField>
+          )}
+
+          {kind === "ignition" && (
+            <FormField label="Compression ratio (x:1)">
+              {(id) => (
+                <input
+                  id={id}
+                  type="number"
+                  step="0.1"
+                  value={compressionRatio}
+                  placeholder="10.5"
+                  onChange={(e) => setCompressionRatio(e.target.value)}
+                />
+              )}
+            </FormField>
+          )}
         </div>
+
+        <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.75rem" }}>
+          <input
+            type="checkbox"
+            checked={rebuildAxes}
+            onChange={(e) => setRebuildAxes(e.target.checked)}
+          />
+          <span>Rebuild RPM/Load axes from idle &amp; redline</span>
+        </label>
 
         {error && (
           <div style={{ color: "var(--color-error, #d33)", marginTop: "0.75rem" }}>

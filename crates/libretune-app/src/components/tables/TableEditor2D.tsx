@@ -813,10 +813,14 @@ export default function TableEditor2D({
   // Apply a freshly generated grid (from GenerateTableDialog) as a single
   // undoable edit. This is an intentional full-table reseed, so unlike the
   // cell operations it doesn't run the large-change guard.
-  const handleGenerateApply = (zValues: number[][]) => {
-    setLocalZValues(zValues);
-    onValuesChange?.(zValues);
-    pushHistory(zValues, localXBins, localYBins);
+  const handleGenerateApply = (result: { zValues: number[][]; xBins?: number[]; yBins?: number[] }) => {
+    const newX = result.xBins ?? localXBins;
+    const newY = result.yBins ?? localYBins;
+    setLocalZValues(result.zValues);
+    if (result.xBins) setLocalXBins(result.xBins);
+    if (result.yBins) setLocalYBins(result.yBins);
+    onValuesChange?.(result.zValues);
+    pushHistory(result.zValues, newX, newY);
   };
 
   const handleInterpolate = async () => {
@@ -1308,6 +1312,8 @@ export default function TableEditor2D({
           onColorShadeToggle={() => setShowColorShade(!showColorShade)}
           show3D={show3D}
           onToggle3D={() => setShow3D(!show3D)}
+          onGenerate={generatableKind ? () => setShowGenerateDialog(true) : undefined}
+          generatableLabel={generatableKind ? generatableTableLabel(generatableKind) : undefined}
         />
       )}
 

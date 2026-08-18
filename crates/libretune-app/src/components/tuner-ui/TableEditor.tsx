@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect, KeyboardEvent, useMemo } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { useChannels } from '../../stores/realtimeStore';
 import { useHeatmapSettings } from '../../utils/useHeatmapSettings';
 import { contrastTextColor } from '../../utils/heatmapColors';
@@ -7,6 +8,8 @@ import './TableEditor.css';
 import TableEditor3D from '../tables/TableEditor3D';
 import TableToolbar from './table-editor/TableToolbar';
 import TableContextMenu from './table-editor/TableContextMenu';
+import GenerateTableDialog from '../dialogs/GenerateTableDialog';
+import { classifyGeneratableTable, generatableTableLabel } from '../../utils/tableGenerator';
 
 export interface TableData {
   name: string;
@@ -126,6 +129,10 @@ export function TableEditor({
   
   // Track if 3D view is enabled
   const [show3D, setShow3D] = useState(false);
+
+  // TunerStudio-style per-table generator (VE / ignition / AFR only).
+  const generatableKind = useMemo(() => classifyGeneratableTable(data.name), [data.name]);
+  const [showGenerateDialog, setShowGenerateDialog] = useState(false);
   
   // Store original data on first render
   useEffect(() => {
@@ -250,6 +257,40 @@ export function TableEditor({
     setHistory(newHistory);
     setHistoryIndex(newHistory.length - 1);
   }, [data, history, historyIndex]);
+
+  // Apply a freshly generated grid (from GenerateTableDialog) as one undoable
+  // edit, optionally with rebuilt RPM/load axes. Persists to the backend cache
+  // so the result survives closing/reopening the table (otherwise a reopen
+  // re-fetches the original definition).
+  const applyGeneratedValues = useCallback(
+    async (result: { zValues: number[][]; xBins?: number[]; yBins?: number[] }) => {
+      pushHistory();
+      try {
+        // Persist rebuilt axes first (writes the bin constants + re-interpolates),
+        // then overwrite the Z grid with the generated values.
+        if (result.xBins && result.yBins) {
+          await invoke('rebin_table', {
+            tableName: data.name,
+            newXBins: result.xBins,
+            newYBins: result.yBins,
+          });
+        }
+        await invoke('update_table_data', {
+          tableName: data.name,
+          zValues: result.zValues,
+        });
+      } catch (e) {
+        console.error('Failed to persist generated table:', e);
+      }
+      onChange({
+        ...data,
+        zValues: result.zValues,
+        xAxis: result.xBins ?? data.xAxis,
+        yAxis: result.yBins ?? data.yAxis,
+      });
+    },
+    [data, onChange, pushHistory],
+  );
 
   // Undo
   const undo = useCallback(() => {
@@ -867,6 +908,8 @@ export function TableEditor({
         hasOutputChannels={!!data.xOutputChannel}
         show3D={show3D}
         onToggle3D={() => setShow3D(!show3D)}
+        onGenerate={generatableKind ? () => setShowGenerateDialog(true) : undefined}
+        generatableLabel={generatableKind ? generatableTableLabel(generatableKind) : undefined}
       />
 
       {/* 3D View */}
@@ -968,6 +1011,18 @@ export function TableEditor({
         )}
         {data.zUnits && <span>Units: {data.zUnits}</span>}
       </div>
+
+      {generatableKind && (
+        <GenerateTableDialog
+          isOpen={showGenerateDialog}
+          onClose={() => setShowGenerateDialog(false)}
+          tableName={data.name}
+          kind={generatableKind}
+          rpmBins={data.xAxis}
+          loadBins={data.yAxis}
+          onApply={applyGeneratedValues}
+        />
+      )}
     </div>
   );
 }
