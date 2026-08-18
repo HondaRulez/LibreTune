@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { Dialog, Button } from "../common";
@@ -89,7 +89,11 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
   const [resolving, setResolving] = useState(false);
   const [localMatches, setLocalMatches] = useState<WizardIniMatch[]>([]);
   const [onlineResults, setOnlineResults] = useState<OnlineIniEntry[]>([]);
-  const [derived, setDerived] = useState<{ url: string; status: "downloading" | "ok" | "failed" } | null>(null);
+  const [derived, setDerived] = useState<{
+    url: string;
+    status: "downloading" | "ok" | "failed";
+    error?: string;
+  } | null>(null);
   const [resolvedIni, setResolvedIni] = useState<ResolvedIni | null>(null);
   const [resolveBusy, setResolveBusy] = useState<string | null>(null);
 
@@ -158,8 +162,8 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
           setResolvedIni({ path, name, source: "rusEFI (auto)" });
           setDerived({ url, status: "ok" });
           return;
-        } catch {
-          setDerived({ url, status: "failed" });
+        } catch (e) {
+          setDerived({ url, status: "failed", error: String(e) });
           // fall through to the repo search / manual upload
         }
       }
@@ -175,10 +179,13 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
   }
 
   // Kick off INI resolution when entering the resolve step (needs a signature).
-  const [resolveTried, setResolveTried] = useState(false);
+  // A ref guard (not state) makes this synchronous, so React StrictMode's
+  // double-invoked effect in dev can't fire two concurrent downloads that race
+  // on the same target file.
+  const resolveTriedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (step === "resolveIni" && signature && !resolving && !resolveTried) {
-      setResolveTried(true);
+    if (step === "resolveIni" && signature && resolveTriedRef.current !== signature) {
+      resolveTriedRef.current = signature;
       void resolveIni(signature);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -246,7 +253,7 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
     setOnlineResults([]);
     setDerived(null);
     setResolvedIni(null);
-    setResolveTried(false);
+    resolveTriedRef.current = null;
   }
   function handleClose() {
     reset();
@@ -379,9 +386,21 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
               <div style={{ fontSize: 12, opacity: 0.85 }}>
                 {derived.status === "downloading" && "Downloading the exact rusEFI/FOME definition for this signature…"}
                 {derived.status === "failed" && (
-                  <span style={{ color: "var(--color-error, #d33)" }}>
-                    Couldn't fetch {derived.url} — falling back below.
-                  </span>
+                  <div style={{ color: "var(--color-error, #d33)" }}>
+                    <div>Couldn't download the definition for this signature.</div>
+                    <div style={{ opacity: 0.8, wordBreak: "break-all" }}>{derived.url}</div>
+                    {derived.error && (
+                      <div style={{ opacity: 0.8, marginTop: 2 }}>Reason: {derived.error}</div>
+                    )}
+                    <Button
+                      variant="secondary"
+                      onClick={() => signature && resolveIni(signature)}
+                      disabled={resolving}
+                      style={{ marginTop: 4 }}
+                    >
+                      Retry download
+                    </Button>
+                  </div>
                 )}
               </div>
             )}
