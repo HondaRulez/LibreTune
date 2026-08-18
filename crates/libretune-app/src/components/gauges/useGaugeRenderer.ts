@@ -20,6 +20,7 @@
 import { useEffect, useRef } from 'react';
 import type { TsGaugeConfig } from '../dashboards/dashTypes';
 import { useRealtimeStore } from '../../stores/realtimeStore';
+import { seedPeak, nextPeakState, type PeakState } from './peakTracking';
 
 /** Lerp factor per animation frame (~280ms to converge at 60fps). */
 const ANIMATION_LERP = 0.25;
@@ -75,9 +76,11 @@ export interface UseGaugeRendererResult {
    */
   displayValueRef: React.MutableRefObject<number>;
   /**
-   * Persistent peak (maximum) of the display value since this gauge
-   * mounted. Painters consult this when `config.peak_hold === true` to
-   * draw a TS-style peak marker. Resets when the gauge is reseated
+   * Persistent peak (maximum) of the display value. Painters consult this
+   * when `config.peak_hold === true` to draw a TS-style peak marker.
+   * Seeded from the gauge's persisted `history_value` (issue #129) and,
+   * when `history_delay > 0`, decayed back to the present value once the
+   * hold expires (`peakTracking.ts`). Resets when the gauge is reseated
    * (component remount).
    */
   peakValueRef: React.MutableRefObject<number>;
@@ -95,9 +98,11 @@ export function useGaugeRenderer(opts: UseGaugeRendererOptions): UseGaugeRendere
 
   // displayValueRef holds the CURRENTLY DISPLAYED (smoothly animated) value.
   const displayValueRef = useRef(initialClamped);
-  // peakValueRef holds the maximum value ever observed by the gauge —
-  // used for the optional `peak_hold` marker.
-  const peakValueRef = useRef(initialClamped);
+  // peakValueRef holds the peak-hold marker value — seeded from the .dash
+  // file's persisted HistoryValue, ratcheted upward by the animation loop,
+  // and decayed per HistoryDelay (see peakTracking.ts).
+  const peakValueRef = useRef(seedPeak(config, initialClamped));
+  const peakStateRef = useRef<PeakState>({ peak: peakValueRef.current, lastNewPeakAt: null });
   // targetRef holds the ANIMATION TARGET — updated by store reads or the
   // sweep/demo prop-sync effect below.
   const targetRef = useRef(initialClamped);
@@ -254,9 +259,15 @@ export function useGaugeRenderer(opts: UseGaugeRendererOptions): UseGaugeRendere
       }
 
       const target = targetRef.current;
-      if (target > peakValueRef.current) {
-        peakValueRef.current = target;
-      }
+      // Peak-hold: ratchet upward, and once `history_delay` has elapsed
+      // without a new peak, let the marker fall back to the present value.
+      peakStateRef.current = nextPeakState(
+        peakStateRef.current,
+        target,
+        timestamp,
+        config.history_delay,
+      );
+      peakValueRef.current = peakStateRef.current.peak;
       const diff = target - displayValueRef.current;
       const keepAlive = continuousRender && !overrideStoreRef.current && channel;
       if (Math.abs(diff) > epsilon) {
@@ -302,7 +313,22 @@ export function useGaugeRenderer(opts: UseGaugeRendererOptions): UseGaugeRendere
     // every 100ms. Costs ~one hash lookup per gauge per tick.
     const watchdog = setInterval(() => {
       if (!loopActive || overrideStoreRef.current || !channel) return;
-      if (rafIdRef.current !== null) return; // Already animating.
+      if (rafIdRef.current === null) {
+        // Peak-hold decay must advance even while the loop is idle
+        // (steady value) — otherwise the marker would hold forever.
+        // performance.now() shares the rAF clock.
+        const next = nextPeakState(
+          peakStateRef.current,
+          targetRef.current,
+          performance.now(),
+          config.history_delay,
+        );
+        if (next !== peakStateRef.current) {
+          peakStateRef.current = next;
+          peakValueRef.current = next.peak;
+          drawFrame();
+        }
+      }
       const raw = readStoreValue();
       if (raw !== undefined) {
         const peg = config.peg_limits;
@@ -333,6 +359,7 @@ export function useGaugeRenderer(opts: UseGaugeRendererOptions): UseGaugeRendere
     config.max,
     config.peg_limits,
     config.antialiasing_on,
+    config.history_delay,
     continuousRender,
   ]);
 
