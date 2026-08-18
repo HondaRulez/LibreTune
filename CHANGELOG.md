@@ -116,6 +116,22 @@ relevant.
   and `peakTracking.test.ts` (9 tests — seed/clamp, ratchet, hold, decay,
   hold-forever on `<= 0`, decay clock for seeded peaks).
 
+### 2026-08-17 — Online INI discovery covers FOME
+
+#### Added
+- **FOME added as an online INI source.** The online INI repository
+  (`search_online_inis` → `OnlineIniRepository`) previously fetched definitions
+  only from Speeduino and rusEFI. It now also fetches FOME's TunerStudio INIs
+  (`FOME-Tech/fome-fw/firmware/tunerstudio`), so signature-based discovery works
+  for FOME ECUs too. The `"fome"` source string is accepted by `download_ini`.
+
+#### Changed
+- The set of upstream sources the search iterates over is now centralized in
+  `IniSource::online_sources()` (previously a hard-coded array inside
+  `refresh_cache`), so adding future platforms is a one-line change plus URLs.
+  Added tests asserting every online source has both a GitHub API URL and a
+  raw-content prefix, and is never the `Custom` (no-upstream) tag.
+
 ### 2026-08-13 — std_injection panel synthesis & offline constant reads
 
 #### Fixed
