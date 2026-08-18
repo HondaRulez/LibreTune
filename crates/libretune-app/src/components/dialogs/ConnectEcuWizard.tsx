@@ -88,6 +88,8 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
   const [resolving, setResolving] = useState(false);
   const [localMatches, setLocalMatches] = useState<WizardIniMatch[]>([]);
   const [onlineResults, setOnlineResults] = useState<OnlineIniEntry[]>([]);
+  const [onlineIsBrowseAll, setOnlineIsBrowseAll] = useState(false);
+  const [onlineFilter, setOnlineFilter] = useState("");
   const [resolvedIni, setResolvedIni] = useState<ResolvedIni | null>(null);
   const [resolveBusy, setResolveBusy] = useState<string | null>(null);
 
@@ -129,13 +131,24 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
     setResolving(true);
     setLocalMatches([]);
     setOnlineResults([]);
+    setOnlineIsBrowseAll(false);
     try {
       const [local, online] = await Promise.all([
         invoke<WizardIniMatch[]>("find_matching_inis", { ecuSignature: sig }).catch(() => []),
         invoke<OnlineIniEntry[]>("search_online_inis", { signature: sig }).catch(() => []),
       ]);
       setLocalMatches(local);
-      setOnlineResults(online);
+      // If the signature match found nothing online, fall back to listing every
+      // available online definition so the user can browse and pick one.
+      if (online.length > 0) {
+        setOnlineResults(online);
+      } else {
+        const all = await invoke<OnlineIniEntry[]>("search_online_inis", { signature: null }).catch(
+          () => [],
+        );
+        setOnlineResults(all);
+        setOnlineIsBrowseAll(all.length > 0);
+      }
       // Auto-select the best local match, if any.
       const best = bestLocalMatch(local);
       if (best) setResolvedIni({ path: best.path, name: best.name, source: "local" });
@@ -212,6 +225,8 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
     setConnectError(null);
     setLocalMatches([]);
     setOnlineResults([]);
+    setOnlineIsBrowseAll(false);
+    setOnlineFilter("");
     setResolvedIni(null);
   }
   function handleClose() {
@@ -365,23 +380,50 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
 
             {onlineResults.length > 0 && (
               <div>
-                <div style={{ fontWeight: 600, marginBottom: 4 }}>Online</div>
-                {onlineResults.slice(0, 8).map((e) => (
-                  <div key={e.download_url} style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0" }}>
-                    <span style={{ flex: 1, wordBreak: "break-all" }}>
-                      {e.name} <span style={{ opacity: 0.6, fontSize: 12 }}>({e.source})</span>
-                    </span>
-                    <Button variant="secondary" onClick={() => downloadOnline(e)} disabled={resolveBusy !== null}>
-                      {resolveBusy === e.download_url ? "Downloading…" : "Download & use"}
-                    </Button>
-                  </div>
-                ))}
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                  {onlineIsBrowseAll ? "Online — no signature match, browse all" : "Online"}
+                </div>
+                {onlineIsBrowseAll && (
+                  <>
+                    <div style={{ opacity: 0.7, fontSize: 12, marginBottom: 4 }}>
+                      No definition matched your signature automatically. Pick one from the online
+                      repositories (Speeduino, rusEFI, …), or upload your ECU's <code>.ini</code> below.
+                    </div>
+                    <input
+                      type="text"
+                      value={onlineFilter}
+                      placeholder="Filter by name or source…"
+                      onChange={(e) => setOnlineFilter(e.target.value)}
+                      style={{ width: "100%", marginBottom: 4 }}
+                    />
+                  </>
+                )}
+                <div style={{ maxHeight: onlineIsBrowseAll ? "30vh" : undefined, overflowY: "auto" }}>
+                  {onlineResults
+                    .filter((e) =>
+                      !onlineFilter.trim()
+                        ? true
+                        : `${e.name} ${e.source}`.toLowerCase().includes(onlineFilter.toLowerCase()),
+                    )
+                    .slice(0, onlineIsBrowseAll ? 100 : 8)
+                    .map((e) => (
+                      <div key={e.download_url} style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0" }}>
+                        <span style={{ flex: 1, wordBreak: "break-all" }}>
+                          {e.name} <span style={{ opacity: 0.6, fontSize: 12 }}>({e.source})</span>
+                        </span>
+                        <Button variant="secondary" onClick={() => downloadOnline(e)} disabled={resolveBusy !== null}>
+                          {resolveBusy === e.download_url ? "Downloading…" : "Download & use"}
+                        </Button>
+                      </div>
+                    ))}
+                </div>
               </div>
             )}
 
             {!resolving && localMatches.length === 0 && onlineResults.length === 0 && (
               <div style={{ opacity: 0.8 }}>
-                No matching definition found locally or online. Upload the <code>.ini</code> from your ECU bundle.
+                No definitions available locally or online (check your internet connection).
+                Upload the <code>.ini</code> from your ECU bundle below.
               </div>
             )}
 
