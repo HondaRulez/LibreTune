@@ -273,6 +273,9 @@ export function TableEditor({
             tableName: data.name,
             newXBins: result.xBins,
             newYBins: result.yBins,
+            // The generated Z grid is written right after, so no need to
+            // interpolate the old values onto the new bins here.
+            interpolateZ: false,
           });
         }
         await invoke('update_table_data', {
