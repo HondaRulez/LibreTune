@@ -27,6 +27,40 @@ export function wizardSteps(transport: WizardTransport | null): WizardStep[] {
   return ["transport", "params", "connect", "resolveIni", "name"];
 }
 
+/** Whether a transport talks over a serial port (USB or a Bluetooth COM port). */
+export function isSerialTransport(transport: WizardTransport | null): boolean {
+  return transport === "usb" || transport === "bluetooth";
+}
+
+/** Common baud rates offered for serial connections. */
+export const WIZARD_BAUD_RATES = [9600, 38400, 57600, 115200, 230400, 460800, 921600];
+
+/** Connection parameters collected on the "params" step. */
+export interface WizardConnectionParams {
+  /** Serial / Bluetooth COM port. */
+  port: string;
+  /** Serial / Bluetooth baud rate. */
+  baud: number;
+  /** WiFi / TCP host. */
+  host: string;
+  /** WiFi / TCP port. */
+  tcpPort: number;
+}
+
+/**
+ * Whether the connection parameters for a transport are complete enough to
+ * attempt a connection. Serial/Bluetooth need a port; WiFi needs host + port;
+ * offline needs nothing.
+ */
+export function paramsComplete(
+  transport: WizardTransport | null,
+  p: WizardConnectionParams,
+): boolean {
+  if (isSerialTransport(transport)) return p.port.trim().length > 0;
+  if (transport === "wifi") return p.host.trim().length > 0 && p.tcpPort > 0;
+  return true;
+}
+
 /** The step after `current`, or `current` itself when already at the last step. */
 export function nextStep(current: WizardStep, transport: WizardTransport | null): WizardStep {
   const steps = wizardSteps(transport);

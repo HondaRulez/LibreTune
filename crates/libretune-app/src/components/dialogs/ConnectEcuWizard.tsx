@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { Dialog, Button } from "../common";
 import {
   WizardTransport,
@@ -9,6 +10,9 @@ import {
   isLastStep,
   transportLabel,
   stepTitle,
+  isSerialTransport,
+  paramsComplete,
+  WIZARD_BAUD_RATES,
 } from "../../utils/connectEcuWizard";
 
 interface ConnectEcuWizardProps {
@@ -32,15 +36,52 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
   const [step, setStep] = useState<WizardStep>("transport");
   const [projectName, setProjectName] = useState("");
 
+  // Connection parameters (Phase 2).
+  const [ports, setPorts] = useState<string[]>([]);
+  const [scanningPorts, setScanningPorts] = useState(false);
+  const [port, setPort] = useState("");
+  const [baud, setBaud] = useState(115200);
+  const [host, setHost] = useState("");
+  const [tcpPort, setTcpPort] = useState(29000);
+
+  const params = { port, baud, host, tcpPort };
+
+  async function scanPorts() {
+    setScanningPorts(true);
+    try {
+      const found = await invoke<string[]>("get_serial_ports");
+      setPorts(found);
+      if (found.length > 0 && !found.includes(port)) setPort(found[0]);
+    } catch {
+      setPorts([]);
+    } finally {
+      setScanningPorts(false);
+    }
+  }
+
+  // Scan serial ports when entering the params step for a serial transport.
+  useEffect(() => {
+    if (step === "params" && isSerialTransport(transport)) void scanPorts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, transport]);
+
   const steps = wizardSteps(transport);
   const stepIndex = steps.indexOf(step);
   const last = isLastStep(step, transport);
-  const canAdvance = step !== "transport" || transport !== null;
+  const canAdvance =
+    step === "transport"
+      ? transport !== null
+      : step === "params"
+        ? paramsComplete(transport, params)
+        : true;
 
   function reset() {
     setTransport(null);
     setStep("transport");
     setProjectName("");
+    setPorts([]);
+    setPort("");
+    setHost("");
   }
   function handleClose() {
     reset();
@@ -75,11 +116,74 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
           </div>
         )}
 
-        {step === "params" && (
-          <PlaceholderStep
-            phase="Phase 2"
-            text={`Connection settings for ${transport ? transportLabel(transport) : ""} (port / baud, or host / TCP port) go here — reusing the existing ConnectionDialog fields and port scan.`}
-          />
+        {step === "params" && isSerialTransport(transport) && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            {transport === "bluetooth" && (
+              <p style={{ opacity: 0.7, fontSize: 12, margin: 0 }}>
+                Bluetooth ECUs appear as a serial (COM) port — pair the device in your OS
+                first, then pick its port below.
+              </p>
+            )}
+            <div>
+              <label style={{ display: "block", marginBottom: "0.25rem" }}>Port</label>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                <select
+                  value={port}
+                  onChange={(e) => setPort(e.target.value)}
+                  style={{ flex: 1 }}
+                >
+                  {ports.length === 0 ? (
+                    <option value="">No ports found</option>
+                  ) : (
+                    ports.map((p) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))
+                  )}
+                </select>
+                <Button variant="secondary" onClick={scanPorts} disabled={scanningPorts}>
+                  {scanningPorts ? "Scanning…" : "Refresh"}
+                </Button>
+              </div>
+            </div>
+            <div>
+              <label style={{ display: "block", marginBottom: "0.25rem" }}>Baud rate</label>
+              <select value={baud} onChange={(e) => setBaud(parseInt(e.target.value))}>
+                {WIZARD_BAUD_RATES.map((b) => (
+                  <option key={b} value={b}>
+                    {b}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
+
+        {step === "params" && transport === "wifi" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            <p style={{ opacity: 0.7, fontSize: 12, margin: 0 }}>
+              For a networked ECU (e.g. rusEFI over WiFi), enter its host/IP and TCP port.
+            </p>
+            <div>
+              <label style={{ display: "block", marginBottom: "0.25rem" }}>Host / IP</label>
+              <input
+                type="text"
+                value={host}
+                placeholder="192.168.4.1"
+                onChange={(e) => setHost(e.target.value)}
+                style={{ width: "100%" }}
+              />
+            </div>
+            <div>
+              <label style={{ display: "block", marginBottom: "0.25rem" }}>TCP port</label>
+              <input
+                type="number"
+                value={tcpPort}
+                onChange={(e) => setTcpPort(parseInt(e.target.value) || 0)}
+              />
+            </div>
+          </div>
         )}
 
         {step === "connect" && (

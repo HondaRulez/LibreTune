@@ -6,6 +6,8 @@ import {
   isLastStep,
   transportLabel,
   stepTitle,
+  isSerialTransport,
+  paramsComplete,
   type WizardStep,
 } from "../connectEcuWizard";
 
@@ -50,6 +52,35 @@ describe("isLastStep", () => {
     expect(isLastStep("resolveIni", "usb")).toBe(false);
     expect(isLastStep("name", "offline")).toBe(true);
     expect(isLastStep("transport", "offline")).toBe(false);
+  });
+});
+
+describe("isSerialTransport", () => {
+  it("treats USB and Bluetooth as serial, WiFi and offline as not", () => {
+    expect(isSerialTransport("usb")).toBe(true);
+    expect(isSerialTransport("bluetooth")).toBe(true);
+    expect(isSerialTransport("wifi")).toBe(false);
+    expect(isSerialTransport("offline")).toBe(false);
+  });
+});
+
+describe("paramsComplete", () => {
+  const base = { port: "", baud: 115200, host: "", tcpPort: 29000 };
+
+  it("requires a port for serial transports", () => {
+    expect(paramsComplete("usb", base)).toBe(false);
+    expect(paramsComplete("usb", { ...base, port: "COM3" })).toBe(true);
+    expect(paramsComplete("bluetooth", { ...base, port: "COM7" })).toBe(true);
+  });
+
+  it("requires host and a positive port for WiFi", () => {
+    expect(paramsComplete("wifi", base)).toBe(false);
+    expect(paramsComplete("wifi", { ...base, host: "192.168.1.10" })).toBe(true);
+    expect(paramsComplete("wifi", { ...base, host: "192.168.1.10", tcpPort: 0 })).toBe(false);
+  });
+
+  it("needs nothing for offline", () => {
+    expect(paramsComplete("offline", base)).toBe(true);
   });
 });
 
