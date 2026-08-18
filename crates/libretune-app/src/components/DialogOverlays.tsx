@@ -24,6 +24,7 @@ import MigrationReportDialog from "./dialogs/MigrationReportDialog";
 import TuneFileDiffDialog from "./dialogs/TuneFileDiffDialog";
 import DynoOverlay from "./tuner-ui/DynoOverlay";
 import NewProjectDialog from "./dialogs/NewProjectDialog";
+import ConnectEcuWizard from "./dialogs/ConnectEcuWizard";
 import BaseMapDialog, { BaseMapResult } from "./dialogs/BaseMapDialog";
 import TuneHistoryPanel from "./TuneHistoryPanel";
 import ErrorDetailsDialog from "./dialogs/ErrorDetailsDialog";
@@ -120,6 +121,8 @@ export interface DialogOverlaysProps {
   // Project
   newProjectDialogOpen: boolean;
   setNewProjectDialogOpen: (v: boolean) => void;
+  connectEcuWizardOpen: boolean;
+  setConnectEcuWizardOpen: (v: boolean) => void;
   repositoryInis: IniEntry[];
   setRepositoryInis: React.Dispatch<React.SetStateAction<IniEntry[]>>;
   createProject: (name: string, iniId: string) => Promise<boolean>;
@@ -215,6 +218,7 @@ export function DialogOverlays(props: DialogOverlaysProps) {
     iniDefaults, applyIniDefaults,
     connectionRuntimePacketMode, setConnectionRuntimePacketMode,
     newProjectDialogOpen, setNewProjectDialogOpen,
+    connectEcuWizardOpen, setConnectEcuWizardOpen,
     repositoryInis, setRepositoryInis, createProject, handleImportTuneIntoProject,
     baseMapDialogOpen, setBaseMapDialogOpen, handleBaseMapApply,
     tuneComparisonOpen, setTuneComparisonOpen, checkStatus,
@@ -313,6 +317,11 @@ export function DialogOverlays(props: DialogOverlaysProps) {
         runtimePacketMode={connectionRuntimePacketMode}
         onRuntimePacketModeChange={setConnectionRuntimePacketMode}
       />
+      <ConnectEcuWizard
+        isOpen={connectEcuWizardOpen}
+        onClose={() => setConnectEcuWizardOpen(false)}
+      />
+
       <NewProjectDialog
         isOpen={newProjectDialogOpen}
         onClose={() => setNewProjectDialogOpen(false)}
