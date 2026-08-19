@@ -120,6 +120,7 @@ function AppContent() {
   const [availableProjects, setAvailableProjects] = useState<ProjectInfo[]>([]);
   const [repositoryInis, setRepositoryInis] = useState<IniEntry[]>([]);
   const [newProjectDialogOpen, setNewProjectDialogOpen] = useState(false);
+  const [onlineIniDialogOpen, setOnlineIniDialogOpen] = useState(false);
   const [connectEcuWizardOpen, setConnectEcuWizardOpen] = useState(false);
 
   // Refresh the repository INI list whenever the New Project dialog opens.
@@ -1481,6 +1482,7 @@ function AppContent() {
     sidebarVisible, showEcuMenus: showEcuMenusInMenubar, tabs, openTarget, handleStdTarget, openHelpTopic, showToast,
     closeProject, handleCreateRestorePoint,
     setConnectEcuWizardOpen, setImportProjectOpen, setSaveDialogOpen, setLoadDialogOpen,
+    setOnlineIniDialogOpen,
     setBurnDialogOpen, setFirmwareUpdateDialogOpen, setRestorePointsOpen, setTuneHistoryOpen, setSettingsDialogOpen,
     setMathChannelsDialogOpen, setAfrDelayTestOpen, setBaseMapDialogOpen, setTableComparisonOpen,
     setTuneFileDiffOpen, setDynoOverlayOpen, setPluginPanelOpen, agentPanelVisible, setAgentPanelVisible, setConnectionDialogOpen,
@@ -1742,6 +1744,8 @@ function AppContent() {
         setConnectionRuntimePacketMode={setConnectionRuntimePacketMode}
         newProjectDialogOpen={newProjectDialogOpen}
         setNewProjectDialogOpen={setNewProjectDialogOpen}
+        onlineIniDialogOpen={onlineIniDialogOpen}
+        setOnlineIniDialogOpen={setOnlineIniDialogOpen}
         connectEcuWizardOpen={connectEcuWizardOpen}
         setConnectEcuWizardOpen={setConnectEcuWizardOpen}
         connectWizardEcu={connectWizardEcu}
