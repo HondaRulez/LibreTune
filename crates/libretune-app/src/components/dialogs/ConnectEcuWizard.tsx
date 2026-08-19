@@ -34,6 +34,8 @@ interface OnlineIniEntry {
 }
 /** The INI the wizard has resolved for the ECU (from a local, online or manual source). */
 interface ResolvedIni {
+  /** Repository ID, usable directly with `create_project`. */
+  id: string;
   path: string;
   name: string;
   source: string;
@@ -42,6 +44,18 @@ interface ResolvedIni {
 interface ConnectEcuWizardProps {
   isOpen: boolean;
   onClose: () => void;
+  /** Mirrors New Project's creation flow (close prior project, load menus/tabs, toast). */
+  onCreateProject: (name: string, iniId: string) => Promise<boolean>;
+  /** Connects using the params this wizard already collected, reusing the
+   * app's normal connect+sync flow (signature-mismatch handling, automatic
+   * tune read on a match) instead of leaving the project merely created. */
+  onConnect: (params: {
+    port: string;
+    baud: number;
+    connectionType: "Serial" | "Tcp";
+    tcpHost: string;
+    tcpPort: number;
+  }) => Promise<void>;
 }
 
 /**
@@ -49,12 +63,13 @@ interface ConnectEcuWizardProps {
  *
  * Guided flow: transport → connection params → connect & read signature →
  * resolve the INI definition (auto local match → online search/download →
- * manual upload) → name the project. Reuses existing backend commands
- * (`get_serial_ports`, `connect_to_ecu`, `find_matching_inis`,
- * `search_online_inis` / `download_ini`, `import_ini`). Project creation is the
- * remaining step (Phase 4); the offline branch skips straight to naming.
+ * manual upload) → name the project, then create it. Reuses existing backend
+ * commands (`get_serial_ports`, `connect_to_ecu`, `find_matching_inis`,
+ * `search_online_inis` / `download_ini`, `import_ini`, `create_project`). The
+ * offline path skips straight to naming and, since no INI is resolved there,
+ * just closes on Finish — offline project creation stays on New Project.
  */
-export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardProps) {
+export default function ConnectEcuWizard({ isOpen, onClose, onCreateProject, onConnect }: ConnectEcuWizardProps) {
   const [transport, setTransport] = useState<WizardTransport | null>(null);
   const [step, setStep] = useState<WizardStep>("transport");
   const [projectName, setProjectName] = useState("");
@@ -98,6 +113,10 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
   } | null>(null);
   const [resolvedIni, setResolvedIni] = useState<ResolvedIni | null>(null);
   const [resolveBusy, setResolveBusy] = useState<string | null>(null);
+
+  // Project creation (Phase 4).
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   // Scan serial ports when entering the params step for a serial transport.
   useEffect(() => {
@@ -152,6 +171,13 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, transport, port, baud, host, tcpPort]);
 
+  /** A downloaded/derived .ini is a filesystem path; re-importing it (idempotent
+   * by signature) gets the repository ID `create_project` needs. */
+  async function resolveIniId(path: string): Promise<string> {
+    const entry = await invoke<{ id: string }>("import_ini", { sourcePath: path });
+    return entry.id;
+  }
+
   async function resolveIni(sig: string) {
     setResolving(true);
     setLocalMatches([]);
@@ -165,7 +191,7 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
       setLocalMatches(local);
       const best = bestLocalMatch(local);
       if (best) {
-        setResolvedIni({ path: best.path, name: best.name, source: "local" });
+        setResolvedIni({ id: best.id, path: best.path, name: best.name, source: "local" });
         return;
       }
 
@@ -187,7 +213,8 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
             name,
             source,
           });
-          setResolvedIni({ path, name, source: label });
+          const id = await resolveIniId(path);
+          setResolvedIni({ id, path, name, source: label });
           setDerived({ url, status: "ok" });
           return;
         } catch (e) {
@@ -227,7 +254,8 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
         name: entry.name,
         source: entry.source,
       });
-      setResolvedIni({ path, name: entry.name, source: entry.source });
+      const id = await resolveIniId(path);
+      setResolvedIni({ id, path, name: entry.name, source: entry.source });
     } catch {
       /* surfaced via lack of selection */
     } finally {
@@ -242,10 +270,10 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
     if (!selected || Array.isArray(selected)) return;
     setResolveBusy("manual");
     try {
-      const entry = await invoke<{ path: string; name: string }>("import_ini", {
+      const entry = await invoke<{ id: string; path: string; name: string }>("import_ini", {
         sourcePath: selected,
       });
-      setResolvedIni({ path: entry.path, name: entry.name, source: "manual" });
+      setResolvedIni({ id: entry.id, path: entry.path, name: entry.name, source: "manual" });
     } catch {
       /* ignore */
     } finally {
@@ -283,12 +311,55 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
     setResolvedIni(null);
     resolveTriedRef.current = null;
     connectTriedForRef.current = null;
+    setCreating(false);
+    setCreateError(null);
   }
   function handleClose() {
     // Don't leave the port held if the user cancels mid-wizard.
     void invoke("disconnect_ecu").catch(() => {});
     reset();
     onClose();
+  }
+
+  /** Create the project from the resolved INI and close the wizard. Offline
+   * (no resolved INI) just closes — that path still goes through New Project. */
+  async function finishAndCreate() {
+    if (!projectName.trim()) return;
+    if (!resolvedIni) {
+      handleClose();
+      return;
+    }
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const ok = await onCreateProject(projectName.trim(), resolvedIni.id);
+      if (ok) {
+        // Land the app actually connected (and, on a signature match, with the
+        // ECU's current tune already read) instead of just having created the
+        // project — reusing the params this wizard already collected so the
+        // user isn't asked to pick the port/baud again right after the wizard.
+        if (transport && transport !== "offline") {
+          await onConnect({
+            port: isSerialTransport(transport) ? port : "",
+            baud,
+            connectionType: transport === "wifi" ? "Tcp" : "Serial",
+            tcpHost: host,
+            tcpPort,
+          }).catch(() => {
+            // connect() already surfaces its own failure toast; the project
+            // itself was created successfully, so don't block closing on it.
+          });
+        }
+        reset();
+        onClose();
+      } else {
+        setCreateError("Project creation failed — see the notification for details.");
+      }
+    } catch (e) {
+      setCreateError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCreating(false);
+    }
   }
 
   const transports: WizardTransport[] = ["usb", "bluetooth", "wifi", "offline"];
@@ -450,7 +521,7 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
                     <span style={{ flex: 1 }}>
                       {m.name} <span style={{ opacity: 0.6, fontSize: 12 }}>({m.match_type})</span>
                     </span>
-                    <Button variant="secondary" onClick={() => setResolvedIni({ path: m.path, name: m.name, source: "local" })}>
+                    <Button variant="secondary" onClick={() => setResolvedIni({ id: m.id, path: m.path, name: m.name, source: "local" })}>
                       Use
                     </Button>
                   </div>
@@ -498,31 +569,47 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
               placeholder="My ECU project"
               onChange={(e) => setProjectName(e.target.value)}
               style={{ width: "100%" }}
+              disabled={creating}
             />
-            {transport === "offline" && (
+            {resolvedIni ? (
+              <p style={{ opacity: 0.8, fontSize: 12, marginTop: "0.5rem" }}>
+                Using <b>{resolvedIni.name}</b> ({resolvedIni.source}).
+              </p>
+            ) : (
               <p style={{ opacity: 0.7, fontSize: 12, marginTop: "0.5rem" }}>
-                Offline: you'll pick an INI definition by hand (today's New Project behaviour).
+                No ECU definition was resolved, so Finish will just close this wizard — pick one
+                from New Project instead (today's behaviour).
               </p>
             )}
-            <p style={{ opacity: 0.6, fontSize: 12, marginTop: "0.75rem" }}>
-              Project creation is wired in a later phase.
-            </p>
+            {createError && (
+              <p style={{ color: "var(--color-error, #d33)", fontSize: 12, marginTop: "0.5rem" }}>
+                {createError}
+              </p>
+            )}
           </div>
         )}
       </Dialog.Body>
 
       <Dialog.Footer>
-        <Button variant="secondary" onClick={handleClose}>
+        <Button variant="secondary" onClick={handleClose} disabled={creating}>
           Cancel
         </Button>
         {stepIndex > 0 && (
-          <Button variant="secondary" onClick={() => setStep(prevStep(step, transport))}>
+          <Button
+            variant="secondary"
+            onClick={() => setStep(prevStep(step, transport))}
+            disabled={creating}
+          >
             Back
           </Button>
         )}
         {last ? (
-          <Button variant="primary" onClick={handleClose} disabled={!projectName.trim()}>
-            Finish
+          <Button
+            variant="primary"
+            onClick={finishAndCreate}
+            disabled={!projectName.trim() || creating}
+          >
+            {creating ? "Creating…" : resolvedIni ? "Create Project" : "Finish"}
           </Button>
         ) : (
           <Button

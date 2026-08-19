@@ -876,12 +876,32 @@ function AppContent() {
 
   async function connect(options?: ConnectOptions) {
     const targetPort = options?.port ?? selectedPort;
+    // Explicit overrides (e.g. from the Connect ECU wizard, which already
+    // collected these on its own params step) win over the current UI
+    // selection — falling back to state avoids a stale-closure read of
+    // values set moments earlier in the same synchronous caller.
+    const effectiveBaud = options?.baudRate ?? baudRate;
+    const effectiveConnectionType = options?.connectionType ?? connectionType;
+    const effectiveTcpHost = options?.tcpHost ?? tcpHost;
+    const effectiveTcpPort = options?.tcpPort ?? tcpPort;
     setConnecting(true);
     setSyncProgress(null);
     setSyncStatus(null);
     try {
       if (options?.port && options.port !== selectedPort) {
         setSelectedPort(options.port);
+      }
+      if (options?.baudRate !== undefined && options.baudRate !== baudRate) {
+        setBaudRate(options.baudRate);
+      }
+      if (options?.connectionType && options.connectionType !== connectionType) {
+        setConnectionType(options.connectionType);
+      }
+      if (options?.tcpHost !== undefined && options.tcpHost !== tcpHost) {
+        setTcpHost(options.tcpHost);
+      }
+      if (options?.tcpPort !== undefined && options.tcpPort !== tcpPort) {
+        setTcpPort(options.tcpPort);
       }
 
       // Sanity-check selected port is still available; refresh list if necessary
@@ -920,12 +940,12 @@ function AppContent() {
 
       const result = await invoke<ConnectResult>("connect_to_ecu", { 
         portName: portToUse, 
-        baudRate, 
+        baudRate: effectiveBaud, 
         timeoutMs, 
         runtimePacketMode: runtimeMode,
-        connectionType,
-        tcpHost,
-        tcpPort
+        connectionType: effectiveConnectionType,
+        tcpHost: effectiveTcpHost,
+        tcpPort: effectiveTcpPort
       });
       await checkStatus();
       
@@ -1132,6 +1152,31 @@ function AppContent() {
       }
       return false;
     }
+  }
+
+  /**
+   * Connect to the ECU the Connect-ECU wizard just detected, using the exact
+   * connection params it already collected. Reuses the full connect() flow
+   * (signature-mismatch handling, automatic tune sync on a match, saving the
+   * connection to the project) instead of just creating the project record —
+   * so finishing the wizard leaves the app actually connected, not just with
+   * a new project open.
+   */
+  async function connectWizardEcu(params: {
+    port: string;
+    baud: number;
+    connectionType: 'Serial' | 'Tcp';
+    tcpHost: string;
+    tcpPort: number;
+  }) {
+    await connect({
+      port: params.port,
+      baudRate: params.baud,
+      connectionType: params.connectionType,
+      tcpHost: params.tcpHost,
+      tcpPort: params.tcpPort,
+      strictPort: true,
+    });
   }
 
   // Refresh open views whenever the backend loads a tune (any entry point)
@@ -1700,6 +1745,7 @@ function AppContent() {
         setNewProjectDialogOpen={setNewProjectDialogOpen}
         connectEcuWizardOpen={connectEcuWizardOpen}
         setConnectEcuWizardOpen={setConnectEcuWizardOpen}
+        connectWizardEcu={connectWizardEcu}
         repositoryInis={repositoryInis}
         setRepositoryInis={setRepositoryInis}
         createProject={createProject}
