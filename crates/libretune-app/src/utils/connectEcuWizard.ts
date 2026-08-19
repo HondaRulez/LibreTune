@@ -63,6 +63,8 @@ export function paramsComplete(
 
 /** A local INI candidate matched against the ECU signature. */
 export interface WizardIniMatch {
+  /** Repository ID, usable directly with `create_project`. */
+  id: string;
   path: string;
   name: string;
   signature: string;

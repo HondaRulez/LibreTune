@@ -91,6 +91,7 @@ describe("paramsComplete", () => {
 
 describe("bestLocalMatch", () => {
   const m = (name: string, match_type: WizardIniMatch["match_type"]): WizardIniMatch => ({
+    id: name,
     path: `/${name}.ini`,
     name,
     signature: name,

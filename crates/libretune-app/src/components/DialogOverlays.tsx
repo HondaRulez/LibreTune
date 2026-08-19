@@ -320,6 +320,7 @@ export function DialogOverlays(props: DialogOverlaysProps) {
       <ConnectEcuWizard
         isOpen={connectEcuWizardOpen}
         onClose={() => setConnectEcuWizardOpen(false)}
+        onCreateProject={createProject}
       />
 
       <NewProjectDialog
