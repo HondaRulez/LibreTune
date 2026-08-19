@@ -693,7 +693,7 @@ function AppContent() {
   useGlobalShortcuts({
     isConnected: status.state === "Connected",
     tuneModified,
-    setNewProjectDialogOpen,
+    setConnectEcuWizardOpen,
     setLoadDialogOpen,
     setSaveDialogOpen,
     setBurnDialogOpen,
@@ -1470,7 +1470,7 @@ function AppContent() {
     t, currentProject, tuneModified, status, ecuType, iniCapabilities, backendMenus, theme,
     sidebarVisible, showEcuMenus: showEcuMenusInMenubar, tabs, openTarget, handleStdTarget, openHelpTopic, showToast,
     closeProject, handleCreateRestorePoint,
-    setNewProjectDialogOpen, setConnectEcuWizardOpen, setImportProjectOpen, setSaveDialogOpen, setLoadDialogOpen,
+    setConnectEcuWizardOpen, setImportProjectOpen, setSaveDialogOpen, setLoadDialogOpen,
     setBurnDialogOpen, setFirmwareUpdateDialogOpen, setRestorePointsOpen, setTuneHistoryOpen, setSettingsDialogOpen,
     setMathChannelsDialogOpen, setAfrDelayTestOpen, setBaseMapDialogOpen, setTableComparisonOpen,
     setTuneFileDiffOpen, setDynoOverlayOpen, setPluginPanelOpen, agentPanelVisible, setAgentPanelVisible, setConnectionDialogOpen,
@@ -1652,8 +1652,7 @@ function AppContent() {
             tabContents={tabContents}
             setTabContents={setTabContents}
             openProject={openProject}
-            setNewProjectDialogOpen={setNewProjectDialogOpen}
-            setConnectionDialogOpen={setConnectionDialogOpen}
+            setConnectEcuWizardOpen={setConnectEcuWizardOpen}
             setImportProjectOpen={setImportProjectOpen}
             handleDeleteProject={handleDeleteProject}
             setBurnDialogOpen={setBurnDialogOpen}
