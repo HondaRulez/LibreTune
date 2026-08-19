@@ -1427,7 +1427,7 @@ export function SettingsDialog({ isOpen, onClose, theme, onThemeChange, onSettin
                           onClick={async () => {
                             if (deletingIni === ini.id) {
                               try {
-                                await invoke('remove_ini', { iniId: ini.id });
+                                await invoke('remove_ini', { id: ini.id });
                                 setIniList(prev => prev.filter(i => i.id !== ini.id));
                               } catch (e) {
                                 console.error('Failed to remove INI:', e);
