@@ -46,10 +46,22 @@ pub struct OnlineIniEntry {
 pub enum IniSource {
     Speeduino,
     RusEFI,
+    /// FOME — a rusEFI fork; its TunerStudio INIs live under
+    /// `FOME-Tech/fome-fw/firmware/tunerstudio`.
+    Fome,
     Custom,
 }
 
 impl IniSource {
+    /// Every source the online search fetches from, in priority order.
+    ///
+    /// `Custom` is intentionally excluded — it has no upstream URL and is only
+    /// used to tag user-imported files. Add new upstream platforms here (and
+    /// give them URLs below) to widen auto-discovery coverage.
+    pub fn online_sources() -> &'static [IniSource] {
+        &[IniSource::Speeduino, IniSource::RusEFI, IniSource::Fome]
+    }
+
     /// Get the GitHub API URL for searching this source
     pub fn github_api_url(&self) -> Option<&'static str> {
         match self {
@@ -58,6 +70,9 @@ impl IniSource {
             ),
             IniSource::RusEFI => {
                 Some("https://api.github.com/repos/rusefi/rusefi/contents/firmware/tunerstudio")
+            }
+            IniSource::Fome => {
+                Some("https://api.github.com/repos/FOME-Tech/fome-fw/contents/firmware/tunerstudio")
             }
             IniSource::Custom => None,
         }
@@ -68,6 +83,7 @@ impl IniSource {
         match self {
             IniSource::Speeduino => Some("https://raw.githubusercontent.com/noisymime/speeduino/master/reference/tunerstudio"),
             IniSource::RusEFI => Some("https://raw.githubusercontent.com/rusefi/rusefi/master/firmware/tunerstudio"),
+            IniSource::Fome => Some("https://raw.githubusercontent.com/FOME-Tech/fome-fw/master/firmware/tunerstudio"),
             IniSource::Custom => None,
         }
     }
@@ -76,6 +92,7 @@ impl IniSource {
         match self {
             IniSource::Speeduino => "Speeduino",
             IniSource::RusEFI => "rusEFI",
+            IniSource::Fome => "FOME",
             IniSource::Custom => "Custom",
         }
     }
@@ -152,8 +169,8 @@ impl OnlineIniRepository {
     async fn refresh_cache(&mut self) -> Result<(), io::Error> {
         self.cache.clear();
 
-        // Fetch from each source
-        for source in [IniSource::Speeduino, IniSource::RusEFI] {
+        // Fetch from each upstream source
+        for &source in IniSource::online_sources() {
             match self.fetch_source_inis(source).await {
                 Ok(entries) => self.cache.extend(entries),
                 Err(e) => {
@@ -285,6 +302,32 @@ mod tests {
     fn test_ini_source_urls() {
         assert!(IniSource::Speeduino.github_api_url().is_some());
         assert!(IniSource::RusEFI.github_api_url().is_some());
+        assert!(IniSource::Fome.github_api_url().is_some());
         assert!(IniSource::Custom.github_api_url().is_none());
+    }
+
+    #[test]
+    fn test_online_sources_all_have_urls() {
+        // Every source the search iterates over must have both a GitHub API URL
+        // and a raw-content prefix, and must not be the Custom (no-upstream) tag.
+        for &source in IniSource::online_sources() {
+            assert_ne!(source, IniSource::Custom);
+            assert!(
+                source.github_api_url().is_some(),
+                "{:?} has no github_api_url",
+                source
+            );
+            assert!(
+                source.raw_url_prefix().is_some(),
+                "{:?} has no raw_url_prefix",
+                source
+            );
+        }
+    }
+
+    #[test]
+    fn test_fome_is_an_online_source() {
+        assert!(IniSource::online_sources().contains(&IniSource::Fome));
+        assert_eq!(IniSource::Fome.display_name(), "FOME");
     }
 }
