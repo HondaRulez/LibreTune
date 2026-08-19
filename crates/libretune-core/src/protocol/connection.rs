@@ -11,7 +11,8 @@ use super::stream::{CommunicationChannel, SerialChannel, TcpChannel};
 use super::{
     commands::{BurnParams, ReadMemoryParams, WriteMemoryParams},
     serial::{clear_buffers, configure_port, list_ports, open_port, PortInfo},
-    Command, CommandBuilder, Packet, ProtocolError, DEFAULT_BAUD_RATE, DEFAULT_TIMEOUT_MS,
+    Command, CommandBuilder, EnvelopeOrder, Packet, ProtocolError, DEFAULT_BAUD_RATE,
+    DEFAULT_TIMEOUT_MS,
 };
 use crate::ini::{AdaptiveTiming, AdaptiveTimingConfig, EcuType, Endianness, ProtocolSettings};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -353,6 +354,11 @@ pub struct Connection {
     signature: Option<String>,
     /// Use modern protocol (detected from INI or ECU response)
     use_modern_protocol: bool,
+    /// Byte order of the CRC envelope's length/CRC fields. Speeduino is
+    /// little-endian, rusEFI/msEnvelope big-endian; set from ProtocolSettings
+    /// and corrected by the handshake's flip-retry if the INI's ECU-type
+    /// detection guessed wrong.
+    envelope_order: EnvelopeOrder,
     /// Protocol settings from INI file (optional, for INI-driven communication)
     protocol_settings: Option<ProtocolSettings>,
     /// Command builder for formatting commands
@@ -387,6 +393,7 @@ impl Connection {
             config,
             signature: None,
             use_modern_protocol: true,
+            envelope_order: EnvelopeOrder::BigEndian,
             protocol_settings: None,
             // When no INI is loaded, default to big-endian command parameters (safe default;
             // overridden to match the INI endianness when with_protocol/set_protocol is called).
@@ -416,12 +423,16 @@ impl Connection {
         // parameters (the INI declares `endianness = little`), while Speeduino
         // and MS2/MS3 use big-endian command parameters.
         let cmd_le = endianness == Endianness::Little;
+        // msEnvelope_1.0 default; the handshake's flip-retry adapts to a
+        // firmware that genuinely frames the other way.
+        let envelope_order = EnvelopeOrder::BigEndian;
         Self {
             channel: None,
             state: ConnectionState::Disconnected,
             config,
             signature: None,
             use_modern_protocol: use_modern,
+            envelope_order,
             protocol_settings: Some(protocol),
             command_builder: CommandBuilder::new(cmd_le),
             endianness,
@@ -442,6 +453,7 @@ impl Connection {
         // Use LE command parameters when INI specifies little-endian (rusEFI/epicEFI/FOME).
         self.command_builder = CommandBuilder::new(endianness == Endianness::Little);
         self.endianness = endianness;
+        self.envelope_order = EnvelopeOrder::BigEndian;
         self.protocol_settings = Some(protocol);
     }
 
@@ -723,25 +735,60 @@ impl Connection {
                 let _ = channel.clear_input_buffer();
             }
 
-            let packet = Packet::new(cmd_bytes.clone());
-            if let Ok(response_packet) = self.send_packet(packet) {
-                tracing::debug!("handshake: CRC protocol succeeded");
-                self.use_modern_protocol = true;
+            // Try the dialect's declared envelope byte order first, then the
+            // flipped order. The ECU-type detection sets the right order for
+            // known dialects (Speeduino little-endian, rusEFI big-endian), but
+            // a wrong guess used to cost the entire CRC path: both sides
+            // misparse each other's length field as 256 and time out (D1).
+            let first_order = self.envelope_order;
+            let orders = [
+                first_order,
+                match first_order {
+                    EnvelopeOrder::BigEndian => EnvelopeOrder::LittleEndian,
+                    EnvelopeOrder::LittleEndian => EnvelopeOrder::BigEndian,
+                },
+            ];
+            for (attempt, order) in orders.into_iter().enumerate() {
+                self.envelope_order = order;
+                if attempt > 0 {
+                    tracing::debug!(
+                        "handshake: retrying CRC with flipped envelope order {:?}",
+                        order
+                    );
+                    // If the first frame's length was misparsed, the firmware
+                    // is still inside its ~400 ms SERIAL_TIMEOUT waiting for a
+                    // payload that will never come — bytes sent now are eaten
+                    // as that payload. Let the window expire before retrying.
+                    std::thread::sleep(Duration::from_millis(450));
+                    if let Some(channel) = self.channel.as_mut() {
+                        let _ = channel.clear_input_buffer();
+                    }
+                }
+                let packet = Packet::new(cmd_bytes.clone());
+                if let Ok(response_packet) = self.send_packet(packet) {
+                    tracing::debug!(
+                        "handshake: CRC protocol succeeded (envelope order {:?})",
+                        order
+                    );
+                    self.use_modern_protocol = true;
 
-                // Handle status byte: response may start with 0x00 (success)
-                let payload = &response_packet.payload;
-                let signature_bytes = if !payload.is_empty() && payload[0] == 0 {
-                    &payload[1..]
-                } else {
-                    payload.as_slice()
-                };
+                    // Handle status byte: response may start with 0x00 (success)
+                    let payload = &response_packet.payload;
+                    let signature_bytes = if !payload.is_empty() && payload[0] == 0 {
+                        &payload[1..]
+                    } else {
+                        payload.as_slice()
+                    };
 
-                let signature = String::from_utf8_lossy(signature_bytes).trim().to_string();
-                tracing::debug!("handshake: CRC success, signature = {:?}", signature);
-                return Ok(signature);
-            } else {
-                tracing::debug!("handshake: CRC protocol failed, trying legacy");
+                    let signature = String::from_utf8_lossy(signature_bytes).trim().to_string();
+                    tracing::debug!("handshake: CRC success, signature = {:?}", signature);
+                    return Ok(signature);
+                }
             }
+            // Neither order worked — restore the declared order for any later
+            // attempts and fall through to legacy.
+            self.envelope_order = first_order;
+            tracing::debug!("handshake: CRC protocol failed in both byte orders, trying legacy");
         }
 
         // Try legacy protocol (raw ASCII command)
@@ -1016,7 +1063,7 @@ impl Connection {
     /// Send CRC packet WITHOUT waiting for response (for burn commands)
     fn send_packet_no_response(&mut self, packet: Packet) -> Result<(), ProtocolError> {
         let channel = self.channel.as_mut().ok_or(ProtocolError::NotConnected)?;
-        let bytes = packet.to_bytes();
+        let bytes = packet.to_bytes_ordered(self.envelope_order);
 
         tracing::debug!("send_packet_no_response: sending {} bytes", bytes.len());
 
@@ -1117,7 +1164,7 @@ impl Connection {
         let send_start = Instant::now();
 
         // Send packet and wait for transmission
-        let bytes = packet.to_bytes();
+        let bytes = packet.to_bytes_ordered(self.envelope_order);
         // Use write_and_wait which avoids the blocking tcdrain issue
         self.tx_bytes = self.tx_bytes.saturating_add(bytes.len() as u64);
         self.tx_packets = self.tx_packets.saturating_add(1);
@@ -1200,7 +1247,10 @@ impl Connection {
         }
 
         // Parse length
-        let length = u16::from_be_bytes(header) as usize;
+        // Length field byte order follows the ECU dialect: Speeduino frames
+        // little-endian, rusEFI/msEnvelope big-endian. Misreading it turns a
+        // 1-byte response into a 256-byte wait (D1).
+        let length = self.envelope_order.read_u16(&header) as usize;
         if length > super::MAX_PACKET_SIZE {
             tracing::warn!(
                 "send_packet: response length {} exceeds MAX_PACKET_SIZE",
@@ -1246,7 +1296,11 @@ impl Connection {
         // If CRC parsing fails, the full packet was already consumed from the TCP
         // stream (exact bytes read = 2 + length + 4), so the stream IS aligned.
         // No drain needed on CRC mismatch — just return the error.
-        Packet::from_bytes_with_mode(&full_packet, self.config.permissive_crc)
+        Packet::from_bytes_ordered(
+            &full_packet,
+            self.envelope_order,
+            self.config.permissive_crc,
+        )
     }
 
     /// Decide which runtime fetch command to use (Burst vs OCH)
@@ -1275,6 +1329,18 @@ impl Connection {
             .and_then(|p| p.och_get_command.clone());
 
         if forced == RuntimePacketMode::ForceBurst {
+            // A Speeduino in new-comms mode ignores a framed 'A' entirely
+            // (zero bytes back), so honouring this override verbatim yields a
+            // permanently empty stream with no error. Prefer OCH there and
+            // say so; the override still means Burst everywhere it works.
+            if self.use_modern_protocol {
+                if let Some(och) = och_cmd_opt.clone() {
+                    return (
+                        RuntimeFetch::OCH(och),
+                        "force: ForceBurst (burst is a no-op in new-comms; using OCH)".to_string(),
+                    );
+                }
+            }
             return (
                 RuntimeFetch::Burst(burst_cmd),
                 "force: ForceBurst".to_string(),
@@ -1308,6 +1374,24 @@ impl Connection {
             self.ecu_type,
             EcuType::Speeduino | EcuType::MS2 | EcuType::MS3 | EcuType::Unknown
         );
+
+        // ...but only while talking legacy. Once the CRC handshake succeeds the
+        // ECU is in new-comms mode, where Burst's bare 'A' is not a command at
+        // all: a Speeduino 2025.01.4 answered an unframed 'A' with a framed
+        // error (`00 01 | 80 | crc32`) and ignored a *framed* 'A' entirely
+        // (zero bytes back). New-comms fetches runtime data with the INI's
+        // ochGetCommand — `r $tsCanId 0x30 %2o %2c` — so use OCH there.
+        // Scoped to the burst lineage: rusEFI-family ECUs keep their
+        // existing heuristic chain below (they are always modern-protocol,
+        // and their burst path is framed and answered).
+        if self.use_modern_protocol && burst_ecu {
+            if let Some(och) = och_cmd_opt.clone() {
+                return (
+                    RuntimeFetch::OCH(och),
+                    "auto: OCH (modern protocol negotiated)".to_string(),
+                );
+            }
+        }
 
         // Unknown ECU type: also default to Burst to be safe. Only rusEFI-lineage
         // ECUs (detected from the INI signature) are allowed to auto-select OCH.
@@ -1409,16 +1493,21 @@ impl Connection {
 
         match choice {
             RuntimeFetch::Burst(cmd) => {
-                // Issue #71 follow-up: Speeduino / MS2 / MS3 / Unknown must use the
-                // legacy raw-ASCII Burst path even if the handshake or INI somehow
-                // left use_modern_protocol enabled. These ECUs do not accept a
-                // CRC-framed Burst request. rusEFI/FOME/epicEFI keep CRC framing
-                // when modern protocol is active.
-                let force_raw_burst = matches!(
-                    self.ecu_type,
-                    EcuType::Speeduino | EcuType::MS2 | EcuType::MS3 | EcuType::Unknown
-                );
-                if self.use_modern_protocol && !force_raw_burst {
+                // Frame the request whenever the handshake actually negotiated
+                // CRC. `use_modern_protocol` is authoritative here: the
+                // handshake clears it on legacy fallback, so a true value means
+                // the ECU answered a framed command and is now in new-comms
+                // mode — where a bare command byte is rejected.
+                //
+                // This used to force the raw byte for Speeduino/MS2/MS3/Unknown
+                // on the belief that they "do not accept a CRC-framed Burst
+                // request". That belief formed while CRC never negotiated on
+                // those ECUs. Once it did (Speeduino 2025.01.4, big-endian
+                // envelope), the override became the bug: the ECU sat in
+                // new-comms answering every bare 'A' with a framed error
+                // (`00 01 | 80 | crc32`), so realtime data froze at ~14 B/s and
+                // every value went stale while the UI still showed Connected.
+                if self.use_modern_protocol {
                     let expected_len = self
                         .protocol_settings
                         .as_ref()
