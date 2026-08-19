@@ -53,9 +53,11 @@ impl IniSource {
     /// Get the GitHub API URL for searching this source
     pub fn github_api_url(&self) -> Option<&'static str> {
         match self {
-            IniSource::Speeduino => Some(
-                "https://api.github.com/repos/noisymime/speeduino/contents/reference/tunerstudio",
-            ),
+            // The .ini used to live under reference/tunerstudio/, which no longer
+            // exists; the single canonical definition is reference/speeduino.ini.
+            IniSource::Speeduino => {
+                Some("https://api.github.com/repos/noisymime/speeduino/contents/reference")
+            }
             IniSource::RusEFI => {
                 Some("https://api.github.com/repos/rusefi/rusefi/contents/firmware/tunerstudio")
             }
@@ -66,7 +68,7 @@ impl IniSource {
     /// Get the raw content URL prefix for this source
     pub fn raw_url_prefix(&self) -> Option<&'static str> {
         match self {
-            IniSource::Speeduino => Some("https://raw.githubusercontent.com/noisymime/speeduino/master/reference/tunerstudio"),
+            IniSource::Speeduino => Some("https://raw.githubusercontent.com/noisymime/speeduino/master/reference"),
             IniSource::RusEFI => Some("https://raw.githubusercontent.com/rusefi/rusefi/master/firmware/tunerstudio"),
             IniSource::Custom => None,
         }

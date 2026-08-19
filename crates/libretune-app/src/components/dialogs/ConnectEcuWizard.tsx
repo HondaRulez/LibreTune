@@ -15,6 +15,7 @@ import {
   paramsComplete,
   bestLocalMatch,
   deriveOnlineIniUrl,
+  deriveSpeeduinoIniUrl,
   sanitizeSignature,
   WIZARD_BAUD_RATES,
   type WizardIniMatch,
@@ -108,6 +109,11 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
     setConnecting(true);
     setConnectError(null);
     setSignature(null);
+    // Release any connection left open by a previous attempt (retry, or a
+    // different ECU picked after going Back) before opening a new one — an
+    // unclosed serial handle keeps Windows from freeing the COM port, so a
+    // disconnected device's port lingers in later scans.
+    await invoke("disconnect_ecu").catch(() => {});
     try {
       const result = await invoke<ConnectResult>("connect_to_ecu", {
         connectionType: transport === "wifi" ? "Tcp" : "Serial",
@@ -121,6 +127,9 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
       setConnectError(e instanceof Error ? e.message : String(e));
     } finally {
       setConnecting(false);
+      // We only needed the signature, not a live connection — closing it
+      // immediately frees the port for the next step (or another device).
+      await invoke("disconnect_ecu").catch(() => {});
     }
   }
 
@@ -149,18 +158,25 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
         return;
       }
 
-      // 2) rusEFI/FOME: derive the exact URL from the signature and download it.
-      const url = deriveOnlineIniUrl(sig);
-      if (url) {
+      // 2) Firmwares with a deterministic online definition: derive the URL
+      // from the signature and download it directly (rusEFI/FOME get an
+      // exact per-build URL; Speeduino has one canonical .ini per release).
+      const deterministic: { deriver: (s: string) => string | null; label: string; source: string }[] = [
+        { deriver: deriveOnlineIniUrl, label: "rusEFI (auto)", source: "rusefi" },
+        { deriver: deriveSpeeduinoIniUrl, label: "Speeduino (auto)", source: "speeduino" },
+      ];
+      for (const { deriver, label, source } of deterministic) {
+        const url = deriver(sig);
+        if (!url) continue;
         setDerived({ url, status: "downloading" });
         try {
           const name = url.split("/").slice(-1)[0] || "definition.ini";
           const path = await invoke<string>("download_ini", {
             downloadUrl: url,
             name,
-            source: "rusefi",
+            source,
           });
-          setResolvedIni({ path, name, source: "rusEFI (auto)" });
+          setResolvedIni({ path, name, source: label });
           setDerived({ url, status: "ok" });
           return;
         } catch (e) {
@@ -169,7 +185,7 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
         }
       }
 
-      // 3) Other firmwares (e.g. Speeduino): match against the repo listing.
+      // 3) Other firmwares: match against the repo listing.
       const online = await invoke<OnlineIniEntry[]>("search_online_inis", { signature: sig }).catch(
         () => [],
       );
@@ -257,6 +273,8 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
     resolveTriedRef.current = null;
   }
   function handleClose() {
+    // Don't leave the port held if the user cancels mid-wizard.
+    void invoke("disconnect_ecu").catch(() => {});
     reset();
     onClose();
   }

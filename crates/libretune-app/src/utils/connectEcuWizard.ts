@@ -123,6 +123,17 @@ export function deriveOnlineIniUrl(signature: string): string | null {
   return `https://rusefi.com/online/ini/${path}.ini`;
 }
 
+/**
+ * Speeduino publishes a single canonical `.ini` for the current release
+ * rather than one per firmware build, so there's no per-signature path to
+ * derive — any `speeduino …` signature resolves to the same definition.
+ */
+export function deriveSpeeduinoIniUrl(signature: string): string | null {
+  const sig = sanitizeSignature(signature).toLowerCase();
+  if (!sig.startsWith("speeduino")) return null;
+  return "https://raw.githubusercontent.com/noisymime/speeduino/master/reference/speeduino.ini";
+}
+
 /** The step after `current`, or `current` itself when already at the last step. */
 export function nextStep(current: WizardStep, transport: WizardTransport | null): WizardStep {
   const steps = wizardSteps(transport);

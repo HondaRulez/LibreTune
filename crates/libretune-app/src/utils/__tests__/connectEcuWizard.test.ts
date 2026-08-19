@@ -10,6 +10,7 @@ import {
   paramsComplete,
   bestLocalMatch,
   deriveOnlineIniUrl,
+  deriveSpeeduinoIniUrl,
   sanitizeSignature,
   type WizardStep,
   type WizardIniMatch,
@@ -150,6 +151,22 @@ describe("deriveOnlineIniUrl with a padded signature", () => {
     expect(deriveOnlineIniUrl("rusEFI master.2026.08.17.mre_f4.2452009527" + String.fromCharCode(0))).toBe(
       "https://rusefi.com/online/ini/rusefi/master/2026/08/17/mre_f4/2452009527.ini",
     );
+  });
+});
+
+describe("deriveSpeeduinoIniUrl", () => {
+  it("resolves any speeduino signature to the canonical definition", () => {
+    expect(deriveSpeeduinoIniUrl("speeduino 202508")).toBe(
+      "https://raw.githubusercontent.com/noisymime/speeduino/master/reference/speeduino.ini",
+    );
+    expect(deriveSpeeduinoIniUrl("Speeduino 202508" + String.fromCharCode(0))).toBe(
+      "https://raw.githubusercontent.com/noisymime/speeduino/master/reference/speeduino.ini",
+    );
+  });
+
+  it("returns null for non-Speeduino signatures", () => {
+    expect(deriveSpeeduinoIniUrl("rusEFI master.2026.08.17.mre_f4.2452009527")).toBeNull();
+    expect(deriveSpeeduinoIniUrl("")).toBeNull();
   });
 });
 
