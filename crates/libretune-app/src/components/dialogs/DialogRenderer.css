@@ -118,6 +118,11 @@
 
 .dialog-view .dialog-row-container--table-settings .dialog-column:last-child .table-editor-2d.embedded {
   width: auto;
+  /* Flex items default to min-width: auto (their content's intrinsic
+     width), which overrides the grid column's own min-width: 0 and lets a
+     wide table (many RPM/load columns) blow out the whole row instead of
+     scrolling inside .editor-content's overflow: auto. */
+  min-width: 0;
 }
 
 /* Single column within row (for West/East positioning) */
