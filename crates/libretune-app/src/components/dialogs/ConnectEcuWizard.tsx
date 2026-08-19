@@ -133,13 +133,24 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
     }
   }
 
-  // Auto-connect when entering the connect step.
+  // Auto-connect when entering the connect step. A ref guard keyed by the
+  // connection params (not state) makes this synchronous, so React
+  // StrictMode's double-invoked effect in dev can't fire two concurrent
+  // connect_to_ecu calls on the same port — Windows opens a COM port
+  // exclusively, so the loser of that race failed with "Access denied" even
+  // within a single process. Keying by the params (rather than a plain
+  // boolean) still auto-retries when the user goes Back and picks a
+  // different port/host, e.g. switching from one ECU to another. The manual
+  // Retry button bypasses this guard by calling connectAndDetect() directly.
+  const connectTriedForRef = useRef<string | null>(null);
   useEffect(() => {
-    if (step === "connect" && !connecting && signature === null && connectError === null) {
+    const attemptKey = `${transport}|${port}|${baud}|${host}|${tcpPort}`;
+    if (step === "connect" && connectTriedForRef.current !== attemptKey) {
+      connectTriedForRef.current = attemptKey;
       void connectAndDetect();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step]);
+  }, [step, transport, port, baud, host, tcpPort]);
 
   async function resolveIni(sig: string) {
     setResolving(true);
@@ -271,6 +282,7 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
     setDerived(null);
     setResolvedIni(null);
     resolveTriedRef.current = null;
+    connectTriedForRef.current = null;
   }
   function handleClose() {
     // Don't leave the port held if the user cancels mid-wizard.
