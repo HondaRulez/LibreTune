@@ -171,6 +171,8 @@ mod tests {
             bit_options: Vec::new(),
             is_pc_variable: false,
             dynamic_size: None,
+            scale_expr: None,
+            translate_expr: None,
         };
 
         // Build a cache with a single page, load raw bytes, write reqFuel=126.
@@ -231,6 +233,8 @@ mod tests {
             .collect(),
             is_pc_variable: false,
             dynamic_size: None,
+            scale_expr: None,
+            translate_expr: None,
         };
 
         let mut def = EcuDefinition::default();
