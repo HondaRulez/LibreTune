@@ -83,9 +83,15 @@ impl IniSource {
     /// Get the raw content URL prefix for this source
     pub fn raw_url_prefix(&self) -> Option<&'static str> {
         match self {
-            IniSource::Speeduino => Some("https://raw.githubusercontent.com/noisymime/speeduino/master/reference"),
-            IniSource::RusEFI => Some("https://raw.githubusercontent.com/rusefi/rusefi/master/firmware/tunerstudio"),
-            IniSource::Fome => Some("https://raw.githubusercontent.com/FOME-Tech/fome-fw/master/firmware/tunerstudio"),
+            IniSource::Speeduino => {
+                Some("https://raw.githubusercontent.com/noisymime/speeduino/master/reference")
+            }
+            IniSource::RusEFI => {
+                Some("https://raw.githubusercontent.com/rusefi/rusefi/master/firmware/tunerstudio")
+            }
+            IniSource::Fome => Some(
+                "https://raw.githubusercontent.com/FOME-Tech/fome-fw/master/firmware/tunerstudio",
+            ),
             IniSource::Custom => None,
         }
     }
