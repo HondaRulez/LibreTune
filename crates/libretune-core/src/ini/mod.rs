@@ -96,6 +96,18 @@ pub struct EcuDefinition {
     /// Used to expand $references in bits field options
     pub defines: HashMap<String, Vec<String>>,
 
+    /// Preprocessor symbols that were active when THIS definition was parsed.
+    ///
+    /// `#if CELSIUS` picks whole channel definitions - Speeduino's coolant is
+    /// `coolantRaw - 40` in one arm and `(coolantRaw - 40) * 1.8 + 32` in the
+    /// other - and the choice is baked in here at parse time. Anything that
+    /// renders or compares a temperature has to ask which arm this definition
+    /// took, and the honest answer travels with the definition rather than
+    /// living in a global that a later settings change can move underneath it.
+    /// Reading such a global is what let a units change relabel every gauge to
+    /// degC while the arithmetic stayed Fahrenheit.
+    pub active_symbols: std::collections::HashSet<String>,
+
     /// Endianness of ECU data
     pub endianness: Endianness,
 
@@ -205,6 +217,12 @@ pub struct EcuDefinition {
 }
 
 impl EcuDefinition {
+    /// Whether a preprocessor symbol was active when this definition was
+    /// parsed, e.g. `CELSIUS`. See [`EcuDefinition::active_symbols`].
+    pub fn symbol_is_active(&self, symbol: &str) -> bool {
+        self.active_symbols.contains(symbol)
+    }
+
     /// Parse an ECU definition from an INI file
     ///
     /// Handles various encodings (UTF-8, Windows-1252, Latin-1) by using
@@ -540,6 +558,7 @@ impl Default for EcuDefinition {
             version_info: String::new(),
             ini_spec_version: "3.64".to_string(),
             defines: HashMap::new(),
+            active_symbols: std::collections::HashSet::new(),
             endianness: Endianness::default(),
             page_sizes: Vec::new(),
             n_pages: 0,

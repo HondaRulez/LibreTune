@@ -44,6 +44,11 @@ pub enum DelayRejection {
     /// small for the noise, sensor dead, or — on the bench — a simulator
     /// whose AFR ignores fuelling).
     NoResponse,
+    /// The trigger was crossed at or before the step instant, so the AFR was
+    /// already moving when the step landed — the previous step had not settled,
+    /// or the mixture was drifting for reasons of its own. An effect cannot
+    /// precede its cause, so there is no transport delay to report here.
+    ResponsePrecedesStep,
 }
 
 impl DelayRejection {
@@ -53,6 +58,7 @@ impl DelayRejection {
             DelayRejection::InsufficientBaseline => "too few baseline samples",
             DelayRejection::UnstableBaseline => "baseline unstable — hold steadier",
             DelayRejection::NoResponse => "no AFR response detected",
+            DelayRejection::ResponsePrecedesStep => "AFR already moving at the step",
         }
     }
 }
@@ -142,7 +148,20 @@ pub fn detect_delay(
                     // after the anchor): fall back to the sample's own time.
                     _ => e.t_ms as f64,
                 };
-                let delay_ms = (crossing_ms - anchor_ms as f64).max(0.0);
+                // A crossing at or before the anchor is not a fast delay, it
+                // is a measurement of something that started earlier. Clamping
+                // it to zero used to record it as a valid 0 ms sample: on a
+                // 52-minute drive three such samples landed in two rpm/load
+                // bins and pulled both means to exactly 0.
+                //
+                // Zero is worse than a missing value, because this figure feeds
+                // AutoTune's historical-point lookup - a 0 ms delay makes it
+                // test the CURRENT sample for fuel cut, which is exactly the
+                // test that misses the tail of a cut still in the exhaust.
+                if crossing_ms <= anchor_ms as f64 {
+                    return Err(DelayRejection::ResponsePrecedesStep);
+                }
+                let delay_ms = crossing_ms - anchor_ms as f64;
 
                 return Ok(DelayMeasurement {
                     delay_ms,
@@ -275,17 +294,24 @@ mod tests {
         );
     }
 
-    /// When the very first post-anchor sample is already past the trigger there
-    /// is nothing to interpolate from; the sample time is the honest answer and
-    /// must not be mangled into a negative or absurd delay.
+    /// An AFR already past the trigger at the step instant is a REJECTION,
+    /// not a zero-millisecond delay.
+    ///
+    /// This test previously asserted `delay_ms == 0.0`, on the reasoning that
+    /// the sample's own time was "the honest answer". It is not: exhaust gas
+    /// cannot reach the sensor in zero time, so a crossing at the anchor means
+    /// the mixture was already moving before the step could have any effect.
+    /// Recording it as a measurement put exact zeros into the delay table - on
+    /// a real 52-minute drive, three of them, pulling two rpm/load bins to a
+    /// mean of 0 ms.
     #[test]
-    fn crossing_on_the_first_sample_falls_back_cleanly() {
+    fn crossing_at_or_before_the_anchor_is_rejected() {
         let pre = trace(&[(0, 14.70), (60, 14.70), (120, 14.70), (180, 14.70)]);
         let post = trace(&[(240, 14.20), (300, 14.10), (360, 14.05)]);
-        let m = detect_delay(240, &pre, &post).expect("should measure");
         assert_eq!(
-            m.delay_ms, 0.0,
-            "first sample at the anchor means zero delay"
+            detect_delay(240, &pre, &post),
+            Err(DelayRejection::ResponsePrecedesStep),
+            "a response at the step instant has no transport delay to report"
         );
     }
 

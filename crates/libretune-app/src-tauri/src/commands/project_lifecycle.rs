@@ -195,9 +195,22 @@ pub async fn open_project(
         eprintln!("[WARN] Tune file exists: {}", tune_path.exists());
     }
 
-    // Load the project's INI definition
+    // Load the project's INI definition.
+    //
+    // Seed the preprocessor symbols FIRST: `#if CELSIUS` and friends are
+    // resolved during the parse, so a declaration read afterwards has no
+    // effect on the definition it was meant to describe. Opening a project is
+    // the path a user actually takes - `load_ini` is only reached by picking a
+    // definition by hand - so without this a project whose
+    // `ecuSettings=AFR|CELSIUS|...` says it was built in Celsius still parsed
+    // the Fahrenheit arm, and the temperatures came out imperial with the
+    // INI's generic "TEMP" label on them.
     let ini_path = project.ini_path();
     eprintln!("[INFO] Loading INI from: {:?}", ini_path);
+    crate::commands::app_settings::seed_symbols_from_project(
+        &ini_path,
+        &crate::load_settings(&app),
+    );
     let def = EcuDefinition::from_file(&ini_path)
         .map_err(|e| format!("Failed to parse project INI: {}", e))?;
 

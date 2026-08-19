@@ -104,7 +104,10 @@ impl IncludeContext {
 
 /// Parse a complete INI file into an EcuDefinition
 pub fn parse_ini(content: &str) -> Result<EcuDefinition, IniError> {
-    parse_ini_internal(content, &mut IncludeContext::new(None))
+    let mut ctx = IncludeContext::new(None);
+    let mut def = parse_ini_internal(content, &mut ctx)?;
+    def.active_symbols = ctx.defined_symbols.clone();
+    Ok(def)
 }
 
 /// Parse an INI file from a path, enabling #include directive support
@@ -115,7 +118,11 @@ pub fn parse_ini_from_path(path: &Path) -> Result<EcuDefinition, IniError> {
     let mut ctx = IncludeContext::new(Some(path));
     ctx.included_files.insert(canonical);
 
-    parse_ini_internal(&content, &mut ctx)
+    // The symbols travel with the definition: they record which arm of every
+    // `#if` this parse took, including any the INI `#set` itself.
+    let mut def = parse_ini_internal(&content, &mut ctx)?;
+    def.active_symbols = ctx.defined_symbols.clone();
+    Ok(def)
 }
 
 /// Read an INI file with encoding fallback (UTF-8 first, then Windows-1252).
@@ -446,6 +453,27 @@ fn parse_ini_internal(content: &str, ctx: &mut IncludeContext) -> Result<EcuDefi
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str()),
     );
+
+    // Roles are declared by `[VeAnalyze]`/`[WueAnalyze]`, which may sit in any
+    // file of an include tree, so they can only be resolved once everything has
+    // been merged. `depth == 0` is the outermost parse; nested calls are
+    // include files still being folded into it.
+    //
+    // Doing it here rather than in each entry point means a caller cannot
+    // forget: `infer_table_roles()` already existed and was correct, but
+    // nothing ever called it, so every table kept `TableRole::Other`.
+    if ctx.depth == 0 {
+        definition.infer_table_roles();
+    }
+    // Envelope byte order stays at the big-endian msEnvelope_1.0 default.
+    //
+    // This previously forced little-endian for Speeduino, reasoning from a
+    // comms.cpp comment ("TS comms is little-endian"). Real hardware says
+    // otherwise: a Speeduino 2025.01.4 on a Mega2560 answered the CRC
+    // handshake only after the byte order was flipped to BigEndian, and its
+    // replies frame the length big-endian (`00 01 | rc | crc32`). The comment
+    // describes the ECU's internal representation, not the wire envelope. The
+    // handshake's flip-retry still covers a firmware that genuinely differs.
 
     Ok(definition)
 }
@@ -1040,7 +1068,19 @@ fn parse_constants_entry(
             def.protocol.block_read_timeout = clean.parse().unwrap_or(1000);
             return;
         }
-        "writeblocks" => {
+        // Speeduino's INI declares this inside [Constants], but only the
+        // [MegaTune]/[TunerStudio] parsers had an arm for it, so the value fell
+        // through to the generic constant parser and `delay_after_port_open`
+        // silently kept its 0 default. The handshake then raced the port open by
+        // ~24 ms instead of waiting the declared 1000 ms.
+        "delayafterportopen" => {
+            let clean = value.split(';').next().unwrap_or("").trim();
+            def.protocol.delay_after_port_open = clean.parse().unwrap_or(0);
+            return;
+        }
+        // Same section-scope gap, plus the key here is `tsWriteBlocks`; the
+        // existing arm only matched the bare `writeBlocks` spelling.
+        "writeblocks" | "tswriteblocks" => {
             def.protocol.write_blocks =
                 value.to_lowercase() == "on" || value == "1" || value.to_lowercase() == "true";
             return;
@@ -2993,12 +3033,25 @@ fn parse_ve_analyze_entry(def: &mut EcuDefinition, key: &str, value: &str) {
     match key_lower.as_str() {
         "veanalyzemap" => {
             // veAnalyzeMap = veTableTbl, lambdaTableTbl, lambdaValue, egoCorrectionForVeAnalyze, { 1 }
-            if parts.len() >= 5 {
+            //
+            // The fifth field, activeCondition, is OPTIONAL - Speeduino writes
+            // only four:
+            //   veAnalyzeMap = veTable1Tbl, afrTable1Tbl, afr, egoCorrection
+            //
+            // Requiring five discarded the entire declaration for every
+            // Speeduino INI, silently: no VE role, no AFR-target role, and
+            // AutoTune fell back to a flat 14.7 target for every cell. On a
+            // real drive that asked to pull ~15% fuel out of the WOT region,
+            // where the target table actually calls for 12.7.
+            if parts.len() >= 4 {
                 config.ve_table_name = parts[0].trim().to_string();
                 config.target_table_name = parts[1].trim().to_string();
                 config.lambda_channel = parts[2].trim().to_string();
                 config.ego_correction_channel = parts[3].trim().to_string();
-                config.active_condition = parts[4].trim().to_string();
+                config.active_condition = parts
+                    .get(4)
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_default();
             }
         }
         "lambdatargettables" => {
@@ -3248,6 +3301,147 @@ mod tests {
             "seeding CELSIUS must select the metric branch"
         );
         set_default_symbols(Vec::<String>::new());
+    }
+
+    /// A definition records which arm of every `#if` it took, so a later
+    /// change to the seed cannot move the answer underneath it.
+    ///
+    /// The gauge label is rendered from this ("TEMP" becomes degC or degF)
+    /// while the value comes from arithmetic baked in at parse time. When the
+    /// label was read from the process-wide seed instead, saving the units
+    /// preference mid-session relabelled every temperature to degC while it
+    /// went on computing Fahrenheit - a gauge reading 176 degC for an 80 degC
+    /// coolant, which is worse than being imperial throughout because it looks
+    /// plausible. Keeping the answer on the definition also means this holds
+    /// with other parses running concurrently.
+    #[test]
+    fn a_definition_remembers_the_symbols_it_was_parsed_with() {
+        let ini = "[Constants]
+page = 1
+#if CELSIUS
+tempTest = scalar, U08, 0, \"C\", 1.0, -40, -40, 102.0, 0
+#else
+tempTest = scalar, U08, 0, \"F\", 1.8, -22.23, -40, 215.0, 0
+#endif
+";
+
+        set_default_symbols(vec!["CELSIUS".to_string()]);
+        let celsius_def = parse_ini(ini).expect("parses");
+        assert_eq!(
+            celsius_def
+                .constants
+                .get("tempTest")
+                .map(|c| c.units.as_str()),
+            Some("C")
+        );
+        assert!(celsius_def.symbol_is_active("CELSIUS"));
+
+        // Change the seed WITHOUT reparsing, exactly as saving the units
+        // setting does. The definition already loaded is still the Celsius one
+        // and must keep saying so - that is what keeps its labels honest.
+        set_default_symbols(Vec::<String>::new());
+        assert!(
+            celsius_def.symbol_is_active("CELSIUS"),
+            "a loaded definition does not change units because a setting did"
+        );
+
+        // Reparsing is what makes the new seed take effect.
+        let imperial_def = parse_ini(ini).expect("parses");
+        assert_eq!(
+            imperial_def
+                .constants
+                .get("tempTest")
+                .map(|c| c.units.as_str()),
+            Some("F")
+        );
+        assert!(!imperial_def.symbol_is_active("CELSIUS"));
+        // ...and the older definition is untouched by it.
+        assert!(celsius_def.symbol_is_active("CELSIUS"));
+    }
+
+    /// Speeduino's `veAnalyzeMap` has four fields, not five.
+    ///
+    /// The fifth (activeCondition) is optional and Speeduino omits it, but the
+    /// parser required it - so the whole declaration was dropped and every
+    /// table kept `TableRole::Other`. AutoTune then could not find the AFR
+    /// target table, fell back to a flat 14.7 for every cell, and on a real
+    /// drive recommended pulling ~15% fuel out of the WOT region where the
+    /// target table asks for 12.7. On an engine without knock detection that
+    /// is an engine-damage bug, so it is pinned with the real INI's own text.
+    #[test]
+    fn ve_analyze_map_parses_speeduinos_four_field_form() {
+        let ini = "[TableEditor]
+table = veTable1Tbl, veTable1, \"VE Table\", 2
+table = afrTable1Tbl, afrTable1, \"AFR Table\", 2
+[VeAnalyze]
+veAnalyzeMap = veTable1Tbl, afrTable1Tbl, afr, egoCorrection
+";
+        let def = parse_ini(ini).expect("parses");
+        let cfg = def.ve_analyze.as_ref().expect("VeAnalyze config present");
+        assert_eq!(cfg.ve_table_name, "veTable1Tbl");
+        assert_eq!(cfg.target_table_name, "afrTable1Tbl");
+        assert_eq!(cfg.lambda_channel, "afr");
+        assert_eq!(cfg.ego_correction_channel, "egoCorrection");
+        assert_eq!(
+            cfg.active_condition, "",
+            "absent optional field stays empty"
+        );
+    }
+
+    /// Roles must be inferred by the time a caller sees the definition.
+    ///
+    /// `infer_table_roles()` was correct but called from nowhere, so every
+    /// table stayed `Other` and the AFR-target lookup could never succeed for
+    /// any INI. The fallback it dropped into guesses by name from a list
+    /// containing both `afrTable` and `lambdaTable` - which on a lambda INI
+    /// compares a ~0.88 target against a ~13 measured AFR.
+    #[test]
+    fn parsing_assigns_table_roles() {
+        let ini = "[TableEditor]
+table = veTable1Tbl, veTable1, \"VE Table\", 2
+table = afrTable1Tbl, afrTable1, \"AFR Table\", 2
+table = sparkTbl, spark, \"Spark Table\", 2
+[VeAnalyze]
+veAnalyzeMap = veTable1Tbl, afrTable1Tbl, afr, egoCorrection
+";
+        let def = parse_ini(ini).expect("parses");
+        let role = |n: &str| {
+            def.tables
+                .values()
+                .find(|t| t.name == n)
+                .map(|t| t.role)
+                .unwrap_or(crate::ini::TableRole::Other)
+        };
+        assert_eq!(role("veTable1Tbl"), crate::ini::TableRole::Ve);
+        assert_eq!(role("afrTable1Tbl"), crate::ini::TableRole::AfrTarget);
+        assert_eq!(role("sparkTbl"), crate::ini::TableRole::Ignition);
+    }
+
+    /// Speeduino declares these in `[Constants]`, where the section parser had
+    /// no arm for either — `delayAfterPortOpen` stayed 0 (handshake raced the
+    /// port open) and `tsWriteBlocks` was never matched at all because only the
+    /// bare `writeBlocks` spelling was handled.
+    #[test]
+    fn constants_section_parses_port_open_delay_and_ts_write_blocks() {
+        let mut def = EcuDefinition::default();
+        let (mut page, mut offset) = (0u8, 0u16);
+
+        assert_eq!(def.protocol.delay_after_port_open, 0, "default is 0");
+        parse_constants_entry(
+            &mut def,
+            "delayAfterPortOpen",
+            "1000 ; let the board settle",
+            &mut page,
+            &mut offset,
+        );
+        assert_eq!(def.protocol.delay_after_port_open, 1000);
+
+        def.protocol.write_blocks = false;
+        parse_constants_entry(&mut def, "tsWriteBlocks", "on", &mut page, &mut offset);
+        assert!(
+            def.protocol.write_blocks,
+            "tsWriteBlocks spelling must match"
+        );
     }
 
     #[test]

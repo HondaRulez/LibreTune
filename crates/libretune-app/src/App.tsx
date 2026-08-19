@@ -121,6 +121,7 @@ function AppContent() {
   const [repositoryInis, setRepositoryInis] = useState<IniEntry[]>([]);
   const [newProjectDialogOpen, setNewProjectDialogOpen] = useState(false);
   const [onlineIniDialogOpen, setOnlineIniDialogOpen] = useState(false);
+  const [connectEcuWizardOpen, setConnectEcuWizardOpen] = useState(false);
   const [baseMapDialogOpen, setBaseMapDialogOpen] = useState(false);
 
   // Connection state
@@ -1425,7 +1426,7 @@ function AppContent() {
     t, currentProject, tuneModified, status, ecuType, iniCapabilities, backendMenus, theme,
     sidebarVisible, showEcuMenus: showEcuMenusInMenubar, tabs, openTarget, handleStdTarget, openHelpTopic, showToast,
     closeProject, handleCreateRestorePoint,
-    setNewProjectDialogOpen, setImportProjectOpen, setSaveDialogOpen, setLoadDialogOpen,
+    setNewProjectDialogOpen, setConnectEcuWizardOpen, setImportProjectOpen, setSaveDialogOpen, setLoadDialogOpen,
     setOnlineIniDialogOpen,
     setBurnDialogOpen, setFirmwareUpdateDialogOpen, setRestorePointsOpen, setTuneHistoryOpen, setSettingsDialogOpen,
     setMathChannelsDialogOpen, setAfrDelayTestOpen, setBaseMapDialogOpen, setTableComparisonOpen,
@@ -1691,6 +1692,8 @@ function AppContent() {
         setNewProjectDialogOpen={setNewProjectDialogOpen}
         onlineIniDialogOpen={onlineIniDialogOpen}
         setOnlineIniDialogOpen={setOnlineIniDialogOpen}
+        connectEcuWizardOpen={connectEcuWizardOpen}
+        setConnectEcuWizardOpen={setConnectEcuWizardOpen}
         repositoryInis={repositoryInis}
         setRepositoryInis={setRepositoryInis}
         createProject={createProject}

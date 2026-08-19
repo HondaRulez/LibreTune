@@ -1,4 +1,4 @@
-import { Copy, Clipboard, Undo2, Redo2, Flame, Crosshair, Box } from 'lucide-react';
+import { Copy, Clipboard, Undo2, Redo2, Flame, Crosshair, Box, Wand2 } from 'lucide-react';
 import '../TableEditor.css';
 
 interface TableToolbarProps {
@@ -24,6 +24,9 @@ interface TableToolbarProps {
   hasOutputChannels: boolean;
   show3D: boolean;
   onToggle3D: () => void;
+  /** Generate the whole table from engine specs (VE/ignition/AFR only). */
+  onGenerate?: () => void;
+  generatableLabel?: string;
 }
 
 export default function TableToolbar({
@@ -49,6 +52,8 @@ export default function TableToolbar({
   hasOutputChannels,
   show3D,
   onToggle3D,
+  onGenerate,
+  generatableLabel,
 }: TableToolbarProps) {
   return (
     <div className="table-toolbar">
@@ -201,6 +206,19 @@ export default function TableToolbar({
       >
         <Box size={14} /> 3D
       </button>
+
+      {onGenerate && (
+        <>
+          <div className="table-toolbar-separator" />
+          <button
+            className="table-toolbar-btn table-toolbar-btn-generate"
+            onClick={onGenerate}
+            title={`Generate ${generatableLabel ?? 'table'} from engine specs`}
+          >
+            <Wand2 size={14} /> Generate
+          </button>
+        </>
+      )}
     </div>
   );
 }

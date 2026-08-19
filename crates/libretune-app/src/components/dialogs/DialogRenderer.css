@@ -48,6 +48,20 @@
   width: 100%;
 }
 
+/* Simple field-list dialogs (e.g. Vehicle Information) have no explicit
+   multi-column layout, so the "label fills remaining space, value pinned to
+   a fixed-width column" grid (see .settings-field below) stretches the gap
+   between label and input across the entire tab width — much wider than
+   TunerStudio's ~700px modal, where the same grid looks tight and tidy.
+   Cap those to the same comfortable form width used by .nested-panel.
+   Excluded via :has() — every other place in this file that opts a
+   sub-element into full width (multi-column split, embedded 2D table,
+   hardware-test grid, wide command-button panel) needs the container to
+   stay uncapped for that to actually reach full width. */
+.dialog-view .dialog-container:not(:has(.dialog-row-container)):not(:has(.nested-panel--multi)):not(:has(.table-editor-2d)):not(:has(.hardware-test-layout)):not(:has(.nested-panel--compact-commands)):not(:has(.curve-editor)) {
+  max-width: 720px;
+}
+
 /* Multi-column layout support for dialogs with East/West positioned panels.
    Default: equal split so dense settings panels (fan + water pump) share space. */
 .dialog-view .dialog-row-container {
@@ -104,6 +118,11 @@
 
 .dialog-view .dialog-row-container--table-settings .dialog-column:last-child .table-editor-2d.embedded {
   width: auto;
+  /* Flex items default to min-width: auto (their content's intrinsic
+     width), which overrides the grid column's own min-width: 0 and lets a
+     wide table (many RPM/load columns) blow out the whole row instead of
+     scrolling inside .editor-content's overflow: auto. */
+  min-width: 0;
 }
 
 /* Single column within row (for West/East positioning) */
