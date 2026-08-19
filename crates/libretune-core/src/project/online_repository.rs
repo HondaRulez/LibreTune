@@ -65,9 +65,11 @@ impl IniSource {
     /// Get the GitHub API URL for searching this source
     pub fn github_api_url(&self) -> Option<&'static str> {
         match self {
-            IniSource::Speeduino => Some(
-                "https://api.github.com/repos/noisymime/speeduino/contents/reference/tunerstudio",
-            ),
+            // The .ini used to live under reference/tunerstudio/, which no longer
+            // exists; the single canonical definition is reference/speeduino.ini.
+            IniSource::Speeduino => {
+                Some("https://api.github.com/repos/noisymime/speeduino/contents/reference")
+            }
             IniSource::RusEFI => {
                 Some("https://api.github.com/repos/rusefi/rusefi/contents/firmware/tunerstudio")
             }
@@ -81,7 +83,7 @@ impl IniSource {
     /// Get the raw content URL prefix for this source
     pub fn raw_url_prefix(&self) -> Option<&'static str> {
         match self {
-            IniSource::Speeduino => Some("https://raw.githubusercontent.com/noisymime/speeduino/master/reference/tunerstudio"),
+            IniSource::Speeduino => Some("https://raw.githubusercontent.com/noisymime/speeduino/master/reference"),
             IniSource::RusEFI => Some("https://raw.githubusercontent.com/rusefi/rusefi/master/firmware/tunerstudio"),
             IniSource::Fome => Some("https://raw.githubusercontent.com/FOME-Tech/fome-fw/master/firmware/tunerstudio"),
             IniSource::Custom => None,
@@ -120,8 +122,14 @@ pub struct OnlineIniRepository {
 impl OnlineIniRepository {
     /// Create a new online repository client
     pub fn new() -> Self {
+        // Ignore any inherited proxy configuration and pin HTTP/1.1: some
+        // GUI-process environments and CDNs reject the request otherwise
+        // (observed as a spurious 400 on rusEFI's online-INI host, while the
+        // exact same request over HTTP/1.1 with no proxy returns 200).
         let client = reqwest::Client::builder()
             .user_agent("LibreTune/0.1")
+            .no_proxy()
+            .http1_only()
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
@@ -237,18 +245,25 @@ impl OnlineIniRepository {
         entry: &OnlineIniEntry,
         target_dir: &Path,
     ) -> Result<std::path::PathBuf, io::Error> {
+        eprintln!("[online-ini] downloading {}", entry.download_url);
         let response = self
             .client
             .get(&entry.download_url)
+            .header(reqwest::header::ACCEPT, "*/*")
             .send()
             .await
             .map_err(|e| io::Error::other(e.to_string()))?;
 
-        if !response.status().is_success() {
-            return Err(io::Error::other(format!(
-                "Download failed: {}",
-                response.status()
-            )));
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            eprintln!(
+                "[online-ini] {} -> {} body: {}",
+                entry.download_url,
+                status,
+                &body.chars().take(300).collect::<String>()
+            );
+            return Err(io::Error::other(format!("Download failed: {}", status)));
         }
 
         let content = response

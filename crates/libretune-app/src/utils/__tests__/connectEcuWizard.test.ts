@@ -9,6 +9,9 @@ import {
   isSerialTransport,
   paramsComplete,
   bestLocalMatch,
+  deriveOnlineIniUrl,
+  deriveSpeeduinoIniUrl,
+  sanitizeSignature,
   type WizardStep,
   type WizardIniMatch,
 } from "../connectEcuWizard";
@@ -106,6 +109,64 @@ describe("bestLocalMatch", () => {
   it("never auto-selects a full mismatch, and handles empty", () => {
     expect(bestLocalMatch([m("a", "mismatch")])).toBeNull();
     expect(bestLocalMatch([])).toBeNull();
+  });
+});
+
+describe("deriveOnlineIniUrl", () => {
+  it("derives the rusEFI URL from a signature (wiki example)", () => {
+    expect(deriveOnlineIniUrl("rusEFI master.2026.08.17.mre_f4.2452009527")).toBe(
+      "https://rusefi.com/online/ini/rusefi/master/2026/08/17/mre_f4/2452009527.ini",
+    );
+  });
+
+  it("lowercases the leading token and handles FOME", () => {
+    expect(deriveOnlineIniUrl("FOME master.2026.01.02.board")).toBe(
+      "https://rusefi.com/online/ini/fome/master/2026/01/02/board.ini",
+    );
+  });
+
+  it("returns null for non-rusEFI signatures", () => {
+    expect(deriveOnlineIniUrl("speeduino 202409")).toBeNull();
+    expect(deriveOnlineIniUrl("MS2Extra comms342aM")).toBeNull();
+    expect(deriveOnlineIniUrl("")).toBeNull();
+  });
+});
+
+describe("sanitizeSignature", () => {
+  const NUL = String.fromCharCode(0);
+  const CR = String.fromCharCode(13);
+  const LF = String.fromCharCode(10);
+  const US = String.fromCharCode(31);
+  it("strips trailing NUL and control bytes and trims", () => {
+    expect(sanitizeSignature("rusEFI master.2026.08.17.mre_f4.2452009527" + NUL)).toBe(
+      "rusEFI master.2026.08.17.mre_f4.2452009527",
+    );
+    expect(sanitizeSignature("  speeduino 202409" + CR + LF)).toBe("speeduino 202409");
+    expect(sanitizeSignature("a" + NUL + "b" + US + "c")).toBe("abc");
+  });
+});
+
+describe("deriveOnlineIniUrl with a padded signature", () => {
+  it("ignores a trailing NUL so the URL stays valid", () => {
+    expect(deriveOnlineIniUrl("rusEFI master.2026.08.17.mre_f4.2452009527" + String.fromCharCode(0))).toBe(
+      "https://rusefi.com/online/ini/rusefi/master/2026/08/17/mre_f4/2452009527.ini",
+    );
+  });
+});
+
+describe("deriveSpeeduinoIniUrl", () => {
+  it("resolves any speeduino signature to the canonical definition", () => {
+    expect(deriveSpeeduinoIniUrl("speeduino 202508")).toBe(
+      "https://raw.githubusercontent.com/noisymime/speeduino/master/reference/speeduino.ini",
+    );
+    expect(deriveSpeeduinoIniUrl("Speeduino 202508" + String.fromCharCode(0))).toBe(
+      "https://raw.githubusercontent.com/noisymime/speeduino/master/reference/speeduino.ini",
+    );
+  });
+
+  it("returns null for non-Speeduino signatures", () => {
+    expect(deriveSpeeduinoIniUrl("rusEFI master.2026.08.17.mre_f4.2452009527")).toBeNull();
+    expect(deriveSpeeduinoIniUrl("")).toBeNull();
   });
 });
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { Dialog, Button } from "../common";
@@ -14,6 +14,9 @@ import {
   isSerialTransport,
   paramsComplete,
   bestLocalMatch,
+  deriveOnlineIniUrl,
+  deriveSpeeduinoIniUrl,
+  sanitizeSignature,
   WIZARD_BAUD_RATES,
   type WizardIniMatch,
 } from "../../utils/connectEcuWizard";
@@ -88,6 +91,11 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
   const [resolving, setResolving] = useState(false);
   const [localMatches, setLocalMatches] = useState<WizardIniMatch[]>([]);
   const [onlineResults, setOnlineResults] = useState<OnlineIniEntry[]>([]);
+  const [derived, setDerived] = useState<{
+    url: string;
+    status: "downloading" | "ok" | "failed";
+    error?: string;
+  } | null>(null);
   const [resolvedIni, setResolvedIni] = useState<ResolvedIni | null>(null);
   const [resolveBusy, setResolveBusy] = useState<string | null>(null);
 
@@ -101,6 +109,11 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
     setConnecting(true);
     setConnectError(null);
     setSignature(null);
+    // Release any connection left open by a previous attempt (retry, or a
+    // different ECU picked after going Back) before opening a new one — an
+    // unclosed serial handle keeps Windows from freeing the COM port, so a
+    // disconnected device's port lingers in later scans.
+    await invoke("disconnect_ecu").catch(() => {});
     try {
       const result = await invoke<ConnectResult>("connect_to_ecu", {
         connectionType: transport === "wifi" ? "Tcp" : "Serial",
@@ -109,44 +122,98 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
         tcpHost: transport === "wifi" ? host : null,
         tcpPort: transport === "wifi" ? tcpPort : null,
       });
-      setSignature(result.signature);
+      setSignature(sanitizeSignature(result.signature));
     } catch (e) {
       setConnectError(e instanceof Error ? e.message : String(e));
     } finally {
       setConnecting(false);
+      // We only needed the signature, not a live connection — closing it
+      // immediately frees the port for the next step (or another device).
+      await invoke("disconnect_ecu").catch(() => {});
     }
   }
 
-  // Auto-connect when entering the connect step.
+  // Auto-connect when entering the connect step. A ref guard keyed by the
+  // connection params (not state) makes this synchronous, so React
+  // StrictMode's double-invoked effect in dev can't fire two concurrent
+  // connect_to_ecu calls on the same port — Windows opens a COM port
+  // exclusively, so the loser of that race failed with "Access denied" even
+  // within a single process. Keying by the params (rather than a plain
+  // boolean) still auto-retries when the user goes Back and picks a
+  // different port/host, e.g. switching from one ECU to another. The manual
+  // Retry button bypasses this guard by calling connectAndDetect() directly.
+  const connectTriedForRef = useRef<string | null>(null);
   useEffect(() => {
-    if (step === "connect" && !connecting && signature === null && connectError === null) {
+    const attemptKey = `${transport}|${port}|${baud}|${host}|${tcpPort}`;
+    if (step === "connect" && connectTriedForRef.current !== attemptKey) {
+      connectTriedForRef.current = attemptKey;
       void connectAndDetect();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step]);
+  }, [step, transport, port, baud, host, tcpPort]);
 
   async function resolveIni(sig: string) {
     setResolving(true);
     setLocalMatches([]);
     setOnlineResults([]);
+    setDerived(null);
     try {
-      const [local, online] = await Promise.all([
-        invoke<WizardIniMatch[]>("find_matching_inis", { ecuSignature: sig }).catch(() => []),
-        invoke<OnlineIniEntry[]>("search_online_inis", { signature: sig }).catch(() => []),
-      ]);
+      // 1) Local definition whose signature= matches (exact > partial).
+      const local = await invoke<WizardIniMatch[]>("find_matching_inis", { ecuSignature: sig }).catch(
+        () => [],
+      );
       setLocalMatches(local);
-      setOnlineResults(online);
-      // Auto-select the best local match, if any.
       const best = bestLocalMatch(local);
-      if (best) setResolvedIni({ path: best.path, name: best.name, source: "local" });
+      if (best) {
+        setResolvedIni({ path: best.path, name: best.name, source: "local" });
+        return;
+      }
+
+      // 2) Firmwares with a deterministic online definition: derive the URL
+      // from the signature and download it directly (rusEFI/FOME get an
+      // exact per-build URL; Speeduino has one canonical .ini per release).
+      const deterministic: { deriver: (s: string) => string | null; label: string; source: string }[] = [
+        { deriver: deriveOnlineIniUrl, label: "rusEFI (auto)", source: "rusefi" },
+        { deriver: deriveSpeeduinoIniUrl, label: "Speeduino (auto)", source: "speeduino" },
+      ];
+      for (const { deriver, label, source } of deterministic) {
+        const url = deriver(sig);
+        if (!url) continue;
+        setDerived({ url, status: "downloading" });
+        try {
+          const name = url.split("/").slice(-1)[0] || "definition.ini";
+          const path = await invoke<string>("download_ini", {
+            downloadUrl: url,
+            name,
+            source,
+          });
+          setResolvedIni({ path, name, source: label });
+          setDerived({ url, status: "ok" });
+          return;
+        } catch (e) {
+          setDerived({ url, status: "failed", error: String(e) });
+          // fall through to the repo search / manual upload
+        }
+      }
+
+      // 3) Other firmwares: match against the repo listing.
+      const online = await invoke<OnlineIniEntry[]>("search_online_inis", { signature: sig }).catch(
+        () => [],
+      );
+      setOnlineResults(online);
     } finally {
       setResolving(false);
     }
   }
 
   // Kick off INI resolution when entering the resolve step (needs a signature).
+  // A ref guard (not state) makes this synchronous, so React StrictMode's
+  // double-invoked effect in dev can't fire two concurrent downloads that race
+  // on the same target file.
+  const resolveTriedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (step === "resolveIni" && signature && !resolving && localMatches.length === 0 && onlineResults.length === 0) {
+    if (step === "resolveIni" && signature && resolveTriedRef.current !== signature) {
+      resolveTriedRef.current = signature;
       void resolveIni(signature);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -212,9 +279,14 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
     setConnectError(null);
     setLocalMatches([]);
     setOnlineResults([]);
+    setDerived(null);
     setResolvedIni(null);
+    resolveTriedRef.current = null;
+    connectTriedForRef.current = null;
   }
   function handleClose() {
+    // Don't leave the port held if the user cancels mid-wizard.
+    void invoke("disconnect_ecu").catch(() => {});
     reset();
     onClose();
   }
@@ -341,6 +413,29 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
           <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
             {resolving && <div style={{ opacity: 0.8 }}>Looking for a matching definition…</div>}
 
+            {derived && (
+              <div style={{ fontSize: 12, opacity: 0.85 }}>
+                {derived.status === "downloading" && "Downloading the exact rusEFI/FOME definition for this signature…"}
+                {derived.status === "failed" && (
+                  <div style={{ color: "var(--color-error, #d33)" }}>
+                    <div>Couldn't download the definition for this signature.</div>
+                    <div style={{ opacity: 0.8, wordBreak: "break-all" }}>{derived.url}</div>
+                    {derived.error && (
+                      <div style={{ opacity: 0.8, marginTop: 2 }}>Reason: {derived.error}</div>
+                    )}
+                    <Button
+                      variant="secondary"
+                      onClick={() => signature && resolveIni(signature)}
+                      disabled={resolving}
+                      style={{ marginTop: 4 }}
+                    >
+                      Retry download
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+
             {resolvedIni && (
               <div style={{ color: "var(--color-success, #2a2)" }}>
                 ✓ Using <b>{resolvedIni.name}</b> ({resolvedIni.source}).
@@ -365,7 +460,7 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
 
             {onlineResults.length > 0 && (
               <div>
-                <div style={{ fontWeight: 600, marginBottom: 4 }}>Online</div>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>Online matches</div>
                 {onlineResults.slice(0, 8).map((e) => (
                   <div key={e.download_url} style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0" }}>
                     <span style={{ flex: 1, wordBreak: "break-all" }}>
@@ -379,9 +474,10 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
               </div>
             )}
 
-            {!resolving && localMatches.length === 0 && onlineResults.length === 0 && (
+            {!resolving && !resolvedIni && localMatches.length === 0 && onlineResults.length === 0 && (
               <div style={{ opacity: 0.8 }}>
-                No matching definition found locally or online. Upload the <code>.ini</code> from your ECU bundle.
+                No definition was resolved automatically for this signature. If you have your ECU's
+                <code>.ini</code> file, load it as a last resort.
               </div>
             )}
 
