@@ -126,7 +126,10 @@
 }
 
 .curve-editor.embedded .curve-content {
-  flex-direction: column;
+  /* Chart beside the values table/gauge, matching TunerStudio's layout,
+     instead of stacking them (which pushed a dialog with multiple curves
+     far below the fold). */
+  flex-direction: row;
   padding: 8px;
   gap: 12px;
   overflow: visible;
@@ -150,9 +153,11 @@
   width: var(--curve-embedded-width, 500px);
 }
 
-/* Bottom section for embedded mode (data table + compact live readout) */
+/* Side section for embedded mode (data table + compact live readout),
+   sitting next to the chart rather than spanning its full width. */
 .curve-editor.embedded .curve-bottom-section {
-  width: var(--curve-embedded-width, 500px);
+  width: 220px;
+  flex-shrink: 0;
 }
 
 .curve-bottom-section {
@@ -217,13 +222,16 @@
 }
 
 .curve-editor.embedded .curve-data-table {
-  max-height: 150px;
+  /* Matches the chart's embedded height so the table sits flush beside it;
+     extra rows scroll inside this box instead of growing the page. */
+  max-height: 280px;
   min-width: 0;
   flex: none;
 }
 
 .curve-editor.embedded .curve-bottom-section .curve-data-table {
-  max-height: none;
+  max-height: 280px;
+  overflow-y: auto;
 }
 
 .curve-bottom-section .curve-data-table table {
