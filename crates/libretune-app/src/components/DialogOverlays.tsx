@@ -123,6 +123,13 @@ export interface DialogOverlaysProps {
   setNewProjectDialogOpen: (v: boolean) => void;
   connectEcuWizardOpen: boolean;
   setConnectEcuWizardOpen: (v: boolean) => void;
+  connectWizardEcu: (params: {
+    port: string;
+    baud: number;
+    connectionType: 'Serial' | 'Tcp';
+    tcpHost: string;
+    tcpPort: number;
+  }) => Promise<void>;
   repositoryInis: IniEntry[];
   setRepositoryInis: React.Dispatch<React.SetStateAction<IniEntry[]>>;
   createProject: (name: string, iniId: string) => Promise<boolean>;
@@ -218,7 +225,7 @@ export function DialogOverlays(props: DialogOverlaysProps) {
     iniDefaults, applyIniDefaults,
     connectionRuntimePacketMode, setConnectionRuntimePacketMode,
     newProjectDialogOpen, setNewProjectDialogOpen,
-    connectEcuWizardOpen, setConnectEcuWizardOpen,
+    connectEcuWizardOpen, setConnectEcuWizardOpen, connectWizardEcu,
     repositoryInis, setRepositoryInis, createProject, handleImportTuneIntoProject,
     baseMapDialogOpen, setBaseMapDialogOpen, handleBaseMapApply,
     tuneComparisonOpen, setTuneComparisonOpen, checkStatus,
@@ -321,6 +328,7 @@ export function DialogOverlays(props: DialogOverlaysProps) {
         isOpen={connectEcuWizardOpen}
         onClose={() => setConnectEcuWizardOpen(false)}
         onCreateProject={createProject}
+        onConnect={connectWizardEcu}
       />
 
       <NewProjectDialog

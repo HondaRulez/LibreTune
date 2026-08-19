@@ -46,6 +46,16 @@ interface ConnectEcuWizardProps {
   onClose: () => void;
   /** Mirrors New Project's creation flow (close prior project, load menus/tabs, toast). */
   onCreateProject: (name: string, iniId: string) => Promise<boolean>;
+  /** Connects using the params this wizard already collected, reusing the
+   * app's normal connect+sync flow (signature-mismatch handling, automatic
+   * tune read on a match) instead of leaving the project merely created. */
+  onConnect: (params: {
+    port: string;
+    baud: number;
+    connectionType: "Serial" | "Tcp";
+    tcpHost: string;
+    tcpPort: number;
+  }) => Promise<void>;
 }
 
 /**
@@ -59,7 +69,7 @@ interface ConnectEcuWizardProps {
  * offline path skips straight to naming and, since no INI is resolved there,
  * just closes on Finish — offline project creation stays on New Project.
  */
-export default function ConnectEcuWizard({ isOpen, onClose, onCreateProject }: ConnectEcuWizardProps) {
+export default function ConnectEcuWizard({ isOpen, onClose, onCreateProject, onConnect }: ConnectEcuWizardProps) {
   const [transport, setTransport] = useState<WizardTransport | null>(null);
   const [step, setStep] = useState<WizardStep>("transport");
   const [projectName, setProjectName] = useState("");
@@ -324,6 +334,22 @@ export default function ConnectEcuWizard({ isOpen, onClose, onCreateProject }: C
     try {
       const ok = await onCreateProject(projectName.trim(), resolvedIni.id);
       if (ok) {
+        // Land the app actually connected (and, on a signature match, with the
+        // ECU's current tune already read) instead of just having created the
+        // project — reusing the params this wizard already collected so the
+        // user isn't asked to pick the port/baud again right after the wizard.
+        if (transport && transport !== "offline") {
+          await onConnect({
+            port: isSerialTransport(transport) ? port : "",
+            baud,
+            connectionType: transport === "wifi" ? "Tcp" : "Serial",
+            tcpHost: host,
+            tcpPort,
+          }).catch(() => {
+            // connect() already surfaces its own failure toast; the project
+            // itself was created successfully, so don't block closing on it.
+          });
+        }
         reset();
         onClose();
       } else {
