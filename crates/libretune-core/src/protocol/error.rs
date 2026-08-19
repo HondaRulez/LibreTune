@@ -67,6 +67,20 @@ pub enum ProtocolError {
         actual: u8,
     },
 
+    /// A write went out but the read-back could not complete, so the write is
+    /// unverified. On a legacy ECU this is itself the corruption signature: a
+    /// buffer-overrun ECU consumes the read command as table data and answers
+    /// with silence. Must not be treated as "offline" — the write was sent.
+    #[error(
+        "write to page {page} offset {offset} could not be verified \
+         (read-back failed: {reason}) — treat the write as unconfirmed"
+    )]
+    WriteVerificationUnavailable {
+        page: u8,
+        offset: u16,
+        reason: String,
+    },
+
     #[error("Port not found: {0}")]
     PortNotFound(String),
 

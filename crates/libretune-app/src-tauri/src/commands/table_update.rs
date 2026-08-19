@@ -121,7 +121,21 @@ pub async fn update_table_data(
                      drive on this tune until it is re-sent and verified: {e}"
                 ));
             }
-            // Anything else (not connected, timeout, dropped adapter) keeps
+            // The write went out but could not be read back. On a legacy ECU
+            // this is the buffer-overrun signature itself (the read command
+            // was eaten as table data), so it must fail as loudly as a
+            // mismatch — this exact case was once a WARN line while a
+            // corrupted ignition table sat in a running engine.
+            Err(
+                e @ libretune_core::protocol::ProtocolError::WriteVerificationUnavailable { .. },
+            ) => {
+                return Err(format!(
+                    "Table {table_name} was sent but the ECU's copy could not \
+                     be confirmed — re-send it before trusting or burning \
+                     this tune: {e}"
+                ));
+            }
+            // A write that never went out (not connected, port gone) keeps
             // the existing offline-tolerant behaviour: the edit is already in
             // the local tune cache above.
             Err(e) => {

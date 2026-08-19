@@ -376,9 +376,6 @@ pub struct Connection {
     /// blocking I/O polling loops abort early so `disconnect()` can complete even
     /// while another thread is mid-read (Issue #71: "disconnect does nothing").
     cancel: Arc<AtomicBool>,
-    /// Whether `write_memory_verified` reads back after writing. See
-    /// [`set_verify_writes`](Connection::set_verify_writes).
-    verify_writes: bool,
 }
 
 impl Connection {
@@ -403,7 +400,6 @@ impl Connection {
             last_written_page: None,
             ecu_type: EcuType::Unknown,
             cancel: Arc::new(AtomicBool::new(false)),
-            verify_writes: true,
         }
     }
 
@@ -437,7 +433,6 @@ impl Connection {
             last_written_page: None,
             ecu_type: EcuType::Unknown,
             cancel: Arc::new(AtomicBool::new(false)),
-            verify_writes: true,
         }
     }
 
@@ -1589,8 +1584,12 @@ impl Connection {
 
             Ok(payload[1..].to_vec())
         } else {
-            // Legacy protocol: send raw command
-            self.send_raw_command(&cmd)
+            // Legacy protocol: the reply length is exactly the requested
+            // count, so let the read return as soon as it has arrived instead
+            // of waiting out the inter-character timeout — the read-back
+            // verify does one of these per written chunk, under the
+            // connection lock, while the realtime poll waits.
+            self.send_raw_command_expecting(&cmd, Some(params.length as usize))
         }
     }
 
@@ -1705,7 +1704,20 @@ impl Connection {
         } else {
             LEGACY_WRITE_SETTLE_MS
         };
-        Duration::from_millis(wire_ms.max(ini_ms).max(floor))
+        let settle = ini_ms.max(floor);
+        // On unix, write_and_wait has already slept out the transmit time, so
+        // the ECU-side quiet window is simply `settle`. Elsewhere the write
+        // returns as soon as the OS takes the bytes: over USB CDC the wire
+        // time is negligible, but through a real UART bridge (FTDI, BT-SPP)
+        // the frame is still draining — taking max() there would leave only
+        // settle-minus-wire-time of true quiet, inside the measured
+        // corruption zone. Summing is cheap insurance: at worst it doubles a
+        // ~22 ms allowance per 250-byte frame.
+        if cfg!(unix) {
+            Duration::from_millis(wire_ms.max(settle))
+        } else {
+            Duration::from_millis(wire_ms + settle)
+        }
     }
 
     /// Write a full page to ECU, respecting blocking factor (same chunking as `read_page`).
@@ -1872,14 +1884,6 @@ impl Connection {
         result
     }
 
-    /// Whether [`write_memory_verified`](Self::write_memory_verified) actually
-    /// reads back. On by default; callers that are writing continuously (a
-    /// live slider, a bulk restore that verifies by page CRC afterwards) can
-    /// turn it off to save the extra round-trip.
-    pub fn set_verify_writes(&mut self, enabled: bool) {
-        self.verify_writes = enabled;
-    }
-
     /// As [`write_memory`](Self::write_memory), but read the region straight
     /// back and fail if the ECU is not holding what was sent.
     ///
@@ -1899,28 +1903,43 @@ impl Connection {
         let expected = params.data.clone();
         self.write_memory(params)?;
 
-        if !self.verify_writes || expected.is_empty() {
+        // A modern-protocol write is acknowledged frame by frame
+        // (`check_write_response_status`), so the ECU has already confirmed
+        // storage; reading back would double the traffic for no added signal.
+        // Legacy is answered by silence, which is what the read-back is for.
+        if self.use_modern_protocol || expected.is_empty() {
             return Ok(());
         }
 
         // Read back in the same frame sizes the write used, so a mismatch
         // points at a real ECU-side difference rather than an oversized read.
+        // From here on a failure is not "offline": the write already went out,
+        // and an ECU that ate the read command as table data answers exactly
+        // like a dead link — silence. Report it as unverified, never as a
+        // routine connection warning.
         let chunk = self.effective_write_chunk();
         let mut actual = Vec::with_capacity(expected.len());
         let mut at = offset as usize;
         while actual.len() < expected.len() {
             let take = chunk.min(expected.len() - actual.len());
-            let part = self.read_memory(ReadMemoryParams {
-                page,
-                offset: at as u16,
-                length: take as u16,
-                can_id: 0,
-            })?;
+            let part = self
+                .read_memory(ReadMemoryParams {
+                    page,
+                    offset: at as u16,
+                    length: take as u16,
+                    can_id: 0,
+                })
+                .map_err(|e| ProtocolError::WriteVerificationUnavailable {
+                    page,
+                    offset: at as u16,
+                    reason: e.to_string(),
+                })?;
             if part.len() < take {
-                return Err(ProtocolError::ProtocolError(format!(
-                    "read-back of page {page} offset {at} returned {} of {take} bytes",
-                    part.len()
-                )));
+                return Err(ProtocolError::WriteVerificationUnavailable {
+                    page,
+                    offset: at as u16,
+                    reason: format!("read-back returned {} of {take} bytes", part.len()),
+                });
             }
             actual.extend_from_slice(&part[..take]);
             at += take;
@@ -2733,26 +2752,26 @@ mod tests {
     /// over its own limit, which re-split it into 243 + an 8-byte runt frame.
     #[test]
     fn page_and_memory_writes_chunk_to_the_same_size() {
-        let mut conn = Connection::new(ConnectionConfig::default());
-        let mut proto = ProtocolSettings::default();
-        proto.blocking_factor = 251;
-        conn.set_protocol(proto, Endianness::Big);
+        let core = Arc::new(Mutex::new(MegaCore::new()));
+        let mut conn = speeduino_conn(&core);
+        assert_eq!(
+            conn.effective_write_chunk(),
+            243,
+            "251 less the 7-byte command header, plus one byte of margin"
+        );
 
-        let chunk = conn.effective_write_chunk();
-        assert_eq!(chunk, 243, "251 less the 8-byte command header");
+        // A 288-byte page must reach the wire as exactly two frames — 243+7
+        // and 45+7 header bytes — with no runt. Asserting on the simulated
+        // ECU's actual bursts is what catches `write_page` splitting at the
+        // raw blocking factor again: that put a 258-byte frame on the wire
+        // (over the 257-byte ring) followed by an 8-byte runt.
+        let data: Vec<u8> = (0..288u32).map(|i| i as u8).collect();
+        conn.write_page(3, &data).expect("write_page");
 
-        // A 288-byte page must go out in exactly two frames, with no runt.
-        let frames: Vec<usize> = (0..288)
-            .step_by(chunk)
-            .map(|o| chunk.min(288 - o))
-            .collect();
-        assert_eq!(frames, vec![243, 45]);
-        for f in &frames {
-            assert!(
-                *f <= chunk,
-                "frame of {f} exceeds what write_memory accepts"
-            );
-        }
+        let c = core.lock().unwrap();
+        assert_eq!(c.bursts, vec![250, 52], "wire frames (data + 7B header)");
+        assert_eq!(c.dropped, 0, "no frame may overrun the Mega RX ring");
+        assert_eq!(&c.page(3)[..288], &data[..], "page must arrive intact");
     }
 
     // ---------------------------------------------------------------------
@@ -2971,11 +2990,15 @@ mod tests {
         conn
     }
 
-    /// The harness has to be able to see the bug, or the regression test below
-    /// proves nothing. Drive the simulated Mega with the frame the pre-fix code
-    /// actually sent and confirm it reproduces what the bench recorded on
-    /// 18 Aug 2026: six bytes dropped, the next command's header written into
-    /// the ignition table's top row, and the write behind it lost entirely.
+    /// Characterisation test of the HARNESS, not of production code: it drives
+    /// the simulated Mega directly with the frame the pre-fix code used to
+    /// send, bypassing `Connection` entirely. It exists so the regression
+    /// tests below mean something — a harness that cannot see the bug proves
+    /// nothing. It cannot fail from reverting the fix; the tests that can are
+    /// `table_writes_survive_the_mega_rx_limit` and its siblings.
+    /// Expected signature is what the bench recorded on 18 Aug 2026: six
+    /// bytes dropped, the next command's header written into the ignition
+    /// table's top row, and the write behind it lost entirely.
     #[test]
     fn mega_rx_limit_eats_the_frame_tail_and_the_next_command() {
         let core = Arc::new(Mutex::new(MegaCore::new()));
@@ -3088,7 +3111,15 @@ mod tests {
         proto.inter_write_delay = 100;
         conn.set_protocol(proto, Endianness::Big);
         conn.use_modern_protocol = false;
-        assert_eq!(conn.inter_frame_delay(8), Duration::from_millis(100));
+        // On unix the wire time is already slept out by write_and_wait, so the
+        // delay is exactly the INI value; elsewhere the frame's ~1 ms wire
+        // time is added on top. Either way the INI value must dominate an
+        // 8-byte frame's wire time — and not be doubled or dropped.
+        let d = conn.inter_frame_delay(8);
+        assert!(
+            d >= Duration::from_millis(100) && d <= Duration::from_millis(105),
+            "INI inter-write delay must win for a short frame, got {d:?}"
+        );
 
         // A CRC ECU acknowledges the write, so it needs no blind wait.
         conn.use_modern_protocol = true;
