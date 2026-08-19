@@ -40,8 +40,7 @@ export interface TabContentRouterProps {
 
   // Welcome view actions
   openProject: (path: string) => void | Promise<void>;
-  setNewProjectDialogOpen: (open: boolean) => void;
-  setConnectionDialogOpen: (open: boolean) => void;
+  setConnectEcuWizardOpen: (open: boolean) => void;
   setImportProjectOpen: (open: boolean) => void;
   handleDeleteProject: (name: string) => void | Promise<void>;
 
@@ -78,8 +77,7 @@ export function TabContentRouter(props: TabContentRouterProps) {
     tabContents,
     setTabContents,
     openProject,
-    setNewProjectDialogOpen,
-    setConnectionDialogOpen,
+    setConnectEcuWizardOpen,
     setImportProjectOpen,
     handleDeleteProject,
     setBurnDialogOpen,
@@ -100,8 +98,7 @@ export function TabContentRouter(props: TabContentRouterProps) {
       <WelcomeView
         projects={availableProjects}
         onOpenProject={(path) => openProject(path)}
-        onNewProject={() => setNewProjectDialogOpen(true)}
-        onConnect={() => setConnectionDialogOpen(true)}
+        onNewProject={() => setConnectEcuWizardOpen(true)}
         onImportTsProject={() => setImportProjectOpen(true)}
         onDeleteProject={handleDeleteProject}
       />

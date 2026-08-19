@@ -63,6 +63,8 @@ export function paramsComplete(
 
 /** A local INI candidate matched against the ECU signature. */
 export interface WizardIniMatch {
+  /** Repository ID, usable directly with `create_project`. */
+  id: string;
   path: string;
   name: string;
   signature: string;
@@ -79,6 +81,59 @@ export function bestLocalMatch(matches: WizardIniMatch[]): WizardIniMatch | null
     matches.find((m) => m.match_type === "partial") ??
     null
   );
+}
+
+/**
+ * Clean a firmware signature read from an ECU.
+ *
+ * ECUs frequently pad the signature returned by the `Q`/`S` command with a
+ * trailing NUL (or other control bytes), and TunerStudio/MSDroid strip these
+ * before using it. If they leak through they corrupt both the `signature=`
+ * comparison and the derived online URL (a trailing NUL turns a valid rusEFI
+ * URL into a 400 Bad Request). We drop every ASCII control character
+ * (code < 0x20 and 0x7F) and trim surrounding whitespace.
+ */
+export function sanitizeSignature(signature: string): string {
+  // Drop ASCII control characters (code < 0x20 and 0x7F, e.g. a trailing
+  // NUL the ECU pads the signature with) and trim, matching TunerStudio.
+  return Array.from(signature)
+    .filter((ch) => {
+      const code = ch.charCodeAt(0);
+      return code >= 0x20 && code !== 0x7f;
+    })
+    .join("")
+    .trim();
+}
+
+/**
+ * Derive the deterministic online `.ini` URL from a firmware signature, the way
+ * rusEFI/FOME publish definitions (rusEFI wiki "INI lookup logic").
+ *
+ * The signature is lower-cased and every space and dot becomes a `/`, then
+ * appended to the rusEFI online-INI base. Example:
+ *   "rusEFI master.2026.08.17.mre_f4.2452009527"
+ *   → https://rusefi.com/online/ini/rusefi/master/2026/08/17/mre_f4/2452009527.ini
+ *
+ * Returns `null` for signatures that don't use this scheme (e.g. Speeduino,
+ * MegaSquirt), which are resolved by other means.
+ */
+export function deriveOnlineIniUrl(signature: string): string | null {
+  const sig = sanitizeSignature(signature);
+  const first = sig.split(/[ .]/)[0]?.toLowerCase() ?? "";
+  if (first !== "rusefi" && first !== "fome") return null;
+  const path = sig.toLowerCase().replace(/ /g, "/").replace(/\./g, "/");
+  return `https://rusefi.com/online/ini/${path}.ini`;
+}
+
+/**
+ * Speeduino publishes a single canonical `.ini` for the current release
+ * rather than one per firmware build, so there's no per-signature path to
+ * derive — any `speeduino …` signature resolves to the same definition.
+ */
+export function deriveSpeeduinoIniUrl(signature: string): string | null {
+  const sig = sanitizeSignature(signature).toLowerCase();
+  if (!sig.startsWith("speeduino")) return null;
+  return "https://raw.githubusercontent.com/noisymime/speeduino/master/reference/speeduino.ini";
 }
 
 /** The step after `current`, or `current` itself when already at the last step. */

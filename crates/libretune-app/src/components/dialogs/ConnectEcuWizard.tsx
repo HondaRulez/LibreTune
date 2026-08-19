@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { Dialog, Button } from "../common";
@@ -14,6 +14,9 @@ import {
   isSerialTransport,
   paramsComplete,
   bestLocalMatch,
+  deriveOnlineIniUrl,
+  deriveSpeeduinoIniUrl,
+  sanitizeSignature,
   WIZARD_BAUD_RATES,
   type WizardIniMatch,
 } from "../../utils/connectEcuWizard";
@@ -31,6 +34,8 @@ interface OnlineIniEntry {
 }
 /** The INI the wizard has resolved for the ECU (from a local, online or manual source). */
 interface ResolvedIni {
+  /** Repository ID, usable directly with `create_project`. */
+  id: string;
   path: string;
   name: string;
   source: string;
@@ -39,6 +44,18 @@ interface ResolvedIni {
 interface ConnectEcuWizardProps {
   isOpen: boolean;
   onClose: () => void;
+  /** Mirrors New Project's creation flow (close prior project, load menus/tabs, toast). */
+  onCreateProject: (name: string, iniId: string) => Promise<boolean>;
+  /** Connects using the params this wizard already collected, reusing the
+   * app's normal connect+sync flow (signature-mismatch handling, automatic
+   * tune read on a match) instead of leaving the project merely created. */
+  onConnect: (params: {
+    port: string;
+    baud: number;
+    connectionType: "Serial" | "Tcp";
+    tcpHost: string;
+    tcpPort: number;
+  }) => Promise<void>;
 }
 
 /**
@@ -46,12 +63,13 @@ interface ConnectEcuWizardProps {
  *
  * Guided flow: transport → connection params → connect & read signature →
  * resolve the INI definition (auto local match → online search/download →
- * manual upload) → name the project. Reuses existing backend commands
- * (`get_serial_ports`, `connect_to_ecu`, `find_matching_inis`,
- * `search_online_inis` / `download_ini`, `import_ini`). Project creation is the
- * remaining step (Phase 4); the offline branch skips straight to naming.
+ * manual upload) → name the project, then create it. Reuses existing backend
+ * commands (`get_serial_ports`, `connect_to_ecu`, `find_matching_inis`,
+ * `search_online_inis` / `download_ini`, `import_ini`, `create_project`). The
+ * offline path skips straight to naming and, since no INI is resolved there,
+ * just closes on Finish — offline project creation stays on New Project.
  */
-export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardProps) {
+export default function ConnectEcuWizard({ isOpen, onClose, onCreateProject, onConnect }: ConnectEcuWizardProps) {
   const [transport, setTransport] = useState<WizardTransport | null>(null);
   const [step, setStep] = useState<WizardStep>("transport");
   const [projectName, setProjectName] = useState("");
@@ -88,8 +106,17 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
   const [resolving, setResolving] = useState(false);
   const [localMatches, setLocalMatches] = useState<WizardIniMatch[]>([]);
   const [onlineResults, setOnlineResults] = useState<OnlineIniEntry[]>([]);
+  const [derived, setDerived] = useState<{
+    url: string;
+    status: "downloading" | "ok" | "failed";
+    error?: string;
+  } | null>(null);
   const [resolvedIni, setResolvedIni] = useState<ResolvedIni | null>(null);
   const [resolveBusy, setResolveBusy] = useState<string | null>(null);
+
+  // Project creation (Phase 4).
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   // Scan serial ports when entering the params step for a serial transport.
   useEffect(() => {
@@ -101,6 +128,11 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
     setConnecting(true);
     setConnectError(null);
     setSignature(null);
+    // Release any connection left open by a previous attempt (retry, or a
+    // different ECU picked after going Back) before opening a new one — an
+    // unclosed serial handle keeps Windows from freeing the COM port, so a
+    // disconnected device's port lingers in later scans.
+    await invoke("disconnect_ecu").catch(() => {});
     try {
       const result = await invoke<ConnectResult>("connect_to_ecu", {
         connectionType: transport === "wifi" ? "Tcp" : "Serial",
@@ -109,44 +141,106 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
         tcpHost: transport === "wifi" ? host : null,
         tcpPort: transport === "wifi" ? tcpPort : null,
       });
-      setSignature(result.signature);
+      setSignature(sanitizeSignature(result.signature));
     } catch (e) {
       setConnectError(e instanceof Error ? e.message : String(e));
     } finally {
       setConnecting(false);
+      // We only needed the signature, not a live connection — closing it
+      // immediately frees the port for the next step (or another device).
+      await invoke("disconnect_ecu").catch(() => {});
     }
   }
 
-  // Auto-connect when entering the connect step.
+  // Auto-connect when entering the connect step. A ref guard keyed by the
+  // connection params (not state) makes this synchronous, so React
+  // StrictMode's double-invoked effect in dev can't fire two concurrent
+  // connect_to_ecu calls on the same port — Windows opens a COM port
+  // exclusively, so the loser of that race failed with "Access denied" even
+  // within a single process. Keying by the params (rather than a plain
+  // boolean) still auto-retries when the user goes Back and picks a
+  // different port/host, e.g. switching from one ECU to another. The manual
+  // Retry button bypasses this guard by calling connectAndDetect() directly.
+  const connectTriedForRef = useRef<string | null>(null);
   useEffect(() => {
-    if (step === "connect" && !connecting && signature === null && connectError === null) {
+    const attemptKey = `${transport}|${port}|${baud}|${host}|${tcpPort}`;
+    if (step === "connect" && connectTriedForRef.current !== attemptKey) {
+      connectTriedForRef.current = attemptKey;
       void connectAndDetect();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step]);
+  }, [step, transport, port, baud, host, tcpPort]);
+
+  /** A downloaded/derived .ini is a filesystem path; re-importing it (idempotent
+   * by signature) gets the repository ID `create_project` needs. */
+  async function resolveIniId(path: string): Promise<string> {
+    const entry = await invoke<{ id: string }>("import_ini", { sourcePath: path });
+    return entry.id;
+  }
 
   async function resolveIni(sig: string) {
     setResolving(true);
     setLocalMatches([]);
     setOnlineResults([]);
+    setDerived(null);
     try {
-      const [local, online] = await Promise.all([
-        invoke<WizardIniMatch[]>("find_matching_inis", { ecuSignature: sig }).catch(() => []),
-        invoke<OnlineIniEntry[]>("search_online_inis", { signature: sig }).catch(() => []),
-      ]);
+      // 1) Local definition whose signature= matches (exact > partial).
+      const local = await invoke<WizardIniMatch[]>("find_matching_inis", { ecuSignature: sig }).catch(
+        () => [],
+      );
       setLocalMatches(local);
-      setOnlineResults(online);
-      // Auto-select the best local match, if any.
       const best = bestLocalMatch(local);
-      if (best) setResolvedIni({ path: best.path, name: best.name, source: "local" });
+      if (best) {
+        setResolvedIni({ id: best.id, path: best.path, name: best.name, source: "local" });
+        return;
+      }
+
+      // 2) Firmwares with a deterministic online definition: derive the URL
+      // from the signature and download it directly (rusEFI/FOME get an
+      // exact per-build URL; Speeduino has one canonical .ini per release).
+      const deterministic: { deriver: (s: string) => string | null; label: string; source: string }[] = [
+        { deriver: deriveOnlineIniUrl, label: "rusEFI (auto)", source: "rusefi" },
+        { deriver: deriveSpeeduinoIniUrl, label: "Speeduino (auto)", source: "speeduino" },
+      ];
+      for (const { deriver, label, source } of deterministic) {
+        const url = deriver(sig);
+        if (!url) continue;
+        setDerived({ url, status: "downloading" });
+        try {
+          const name = url.split("/").slice(-1)[0] || "definition.ini";
+          const path = await invoke<string>("download_ini", {
+            downloadUrl: url,
+            name,
+            source,
+          });
+          const id = await resolveIniId(path);
+          setResolvedIni({ id, path, name, source: label });
+          setDerived({ url, status: "ok" });
+          return;
+        } catch (e) {
+          setDerived({ url, status: "failed", error: String(e) });
+          // fall through to the repo search / manual upload
+        }
+      }
+
+      // 3) Other firmwares: match against the repo listing.
+      const online = await invoke<OnlineIniEntry[]>("search_online_inis", { signature: sig }).catch(
+        () => [],
+      );
+      setOnlineResults(online);
     } finally {
       setResolving(false);
     }
   }
 
   // Kick off INI resolution when entering the resolve step (needs a signature).
+  // A ref guard (not state) makes this synchronous, so React StrictMode's
+  // double-invoked effect in dev can't fire two concurrent downloads that race
+  // on the same target file.
+  const resolveTriedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (step === "resolveIni" && signature && !resolving && localMatches.length === 0 && onlineResults.length === 0) {
+    if (step === "resolveIni" && signature && resolveTriedRef.current !== signature) {
+      resolveTriedRef.current = signature;
       void resolveIni(signature);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -160,7 +254,8 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
         name: entry.name,
         source: entry.source,
       });
-      setResolvedIni({ path, name: entry.name, source: entry.source });
+      const id = await resolveIniId(path);
+      setResolvedIni({ id, path, name: entry.name, source: entry.source });
     } catch {
       /* surfaced via lack of selection */
     } finally {
@@ -175,10 +270,10 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
     if (!selected || Array.isArray(selected)) return;
     setResolveBusy("manual");
     try {
-      const entry = await invoke<{ path: string; name: string }>("import_ini", {
+      const entry = await invoke<{ id: string; path: string; name: string }>("import_ini", {
         sourcePath: selected,
       });
-      setResolvedIni({ path: entry.path, name: entry.name, source: "manual" });
+      setResolvedIni({ id: entry.id, path: entry.path, name: entry.name, source: "manual" });
     } catch {
       /* ignore */
     } finally {
@@ -212,11 +307,59 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
     setConnectError(null);
     setLocalMatches([]);
     setOnlineResults([]);
+    setDerived(null);
     setResolvedIni(null);
+    resolveTriedRef.current = null;
+    connectTriedForRef.current = null;
+    setCreating(false);
+    setCreateError(null);
   }
   function handleClose() {
+    // Don't leave the port held if the user cancels mid-wizard.
+    void invoke("disconnect_ecu").catch(() => {});
     reset();
     onClose();
+  }
+
+  /** Create the project from the resolved INI and close the wizard. Offline
+   * (no resolved INI) just closes — that path still goes through New Project. */
+  async function finishAndCreate() {
+    if (!projectName.trim()) return;
+    if (!resolvedIni) {
+      handleClose();
+      return;
+    }
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const ok = await onCreateProject(projectName.trim(), resolvedIni.id);
+      if (ok) {
+        // Land the app actually connected (and, on a signature match, with the
+        // ECU's current tune already read) instead of just having created the
+        // project — reusing the params this wizard already collected so the
+        // user isn't asked to pick the port/baud again right after the wizard.
+        if (transport && transport !== "offline") {
+          await onConnect({
+            port: isSerialTransport(transport) ? port : "",
+            baud,
+            connectionType: transport === "wifi" ? "Tcp" : "Serial",
+            tcpHost: host,
+            tcpPort,
+          }).catch(() => {
+            // connect() already surfaces its own failure toast; the project
+            // itself was created successfully, so don't block closing on it.
+          });
+        }
+        reset();
+        onClose();
+      } else {
+        setCreateError("Project creation failed — see the notification for details.");
+      }
+    } catch (e) {
+      setCreateError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCreating(false);
+    }
   }
 
   const transports: WizardTransport[] = ["usb", "bluetooth", "wifi", "offline"];
@@ -341,6 +484,29 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
           <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
             {resolving && <div style={{ opacity: 0.8 }}>Looking for a matching definition…</div>}
 
+            {derived && (
+              <div style={{ fontSize: 12, opacity: 0.85 }}>
+                {derived.status === "downloading" && "Downloading the exact rusEFI/FOME definition for this signature…"}
+                {derived.status === "failed" && (
+                  <div style={{ color: "var(--color-error, #d33)" }}>
+                    <div>Couldn't download the definition for this signature.</div>
+                    <div style={{ opacity: 0.8, wordBreak: "break-all" }}>{derived.url}</div>
+                    {derived.error && (
+                      <div style={{ opacity: 0.8, marginTop: 2 }}>Reason: {derived.error}</div>
+                    )}
+                    <Button
+                      variant="secondary"
+                      onClick={() => signature && resolveIni(signature)}
+                      disabled={resolving}
+                      style={{ marginTop: 4 }}
+                    >
+                      Retry download
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+
             {resolvedIni && (
               <div style={{ color: "var(--color-success, #2a2)" }}>
                 ✓ Using <b>{resolvedIni.name}</b> ({resolvedIni.source}).
@@ -355,7 +521,7 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
                     <span style={{ flex: 1 }}>
                       {m.name} <span style={{ opacity: 0.6, fontSize: 12 }}>({m.match_type})</span>
                     </span>
-                    <Button variant="secondary" onClick={() => setResolvedIni({ path: m.path, name: m.name, source: "local" })}>
+                    <Button variant="secondary" onClick={() => setResolvedIni({ id: m.id, path: m.path, name: m.name, source: "local" })}>
                       Use
                     </Button>
                   </div>
@@ -365,7 +531,7 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
 
             {onlineResults.length > 0 && (
               <div>
-                <div style={{ fontWeight: 600, marginBottom: 4 }}>Online</div>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>Online matches</div>
                 {onlineResults.slice(0, 8).map((e) => (
                   <div key={e.download_url} style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0" }}>
                     <span style={{ flex: 1, wordBreak: "break-all" }}>
@@ -379,9 +545,10 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
               </div>
             )}
 
-            {!resolving && localMatches.length === 0 && onlineResults.length === 0 && (
+            {!resolving && !resolvedIni && localMatches.length === 0 && onlineResults.length === 0 && (
               <div style={{ opacity: 0.8 }}>
-                No matching definition found locally or online. Upload the <code>.ini</code> from your ECU bundle.
+                No definition was resolved automatically for this signature. If you have your ECU's
+                <code>.ini</code> file, load it as a last resort.
               </div>
             )}
 
@@ -402,31 +569,47 @@ export default function ConnectEcuWizard({ isOpen, onClose }: ConnectEcuWizardPr
               placeholder="My ECU project"
               onChange={(e) => setProjectName(e.target.value)}
               style={{ width: "100%" }}
+              disabled={creating}
             />
-            {transport === "offline" && (
+            {resolvedIni ? (
+              <p style={{ opacity: 0.8, fontSize: 12, marginTop: "0.5rem" }}>
+                Using <b>{resolvedIni.name}</b> ({resolvedIni.source}).
+              </p>
+            ) : (
               <p style={{ opacity: 0.7, fontSize: 12, marginTop: "0.5rem" }}>
-                Offline: you'll pick an INI definition by hand (today's New Project behaviour).
+                No ECU definition was resolved, so Finish will just close this wizard — pick one
+                from New Project instead (today's behaviour).
               </p>
             )}
-            <p style={{ opacity: 0.6, fontSize: 12, marginTop: "0.75rem" }}>
-              Project creation is wired in a later phase.
-            </p>
+            {createError && (
+              <p style={{ color: "var(--color-error, #d33)", fontSize: 12, marginTop: "0.5rem" }}>
+                {createError}
+              </p>
+            )}
           </div>
         )}
       </Dialog.Body>
 
       <Dialog.Footer>
-        <Button variant="secondary" onClick={handleClose}>
+        <Button variant="secondary" onClick={handleClose} disabled={creating}>
           Cancel
         </Button>
         {stepIndex > 0 && (
-          <Button variant="secondary" onClick={() => setStep(prevStep(step, transport))}>
+          <Button
+            variant="secondary"
+            onClick={() => setStep(prevStep(step, transport))}
+            disabled={creating}
+          >
             Back
           </Button>
         )}
         {last ? (
-          <Button variant="primary" onClick={handleClose} disabled={!projectName.trim()}>
-            Finish
+          <Button
+            variant="primary"
+            onClick={finishAndCreate}
+            disabled={!projectName.trim() || creating}
+          >
+            {creating ? "Creating…" : resolvedIni ? "Create Project" : "Finish"}
           </Button>
         ) : (
           <Button

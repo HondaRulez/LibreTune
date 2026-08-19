@@ -34,7 +34,6 @@ export interface BuildMenuItemsDeps {
   closeProject: () => void;
   handleCreateRestorePoint: () => void;
   // Setters
-  setNewProjectDialogOpen: (open: boolean) => void;
   setConnectEcuWizardOpen: (open: boolean) => void;
   setImportProjectOpen: (open: boolean) => void;
   setSaveDialogOpen: (open: boolean) => void;
@@ -78,7 +77,7 @@ export function buildMenuItems(deps: BuildMenuItemsDeps): TunerMenuItem[] {
     t, currentProject, tuneModified, status, ecuType, iniCapabilities, backendMenus, theme,
     sidebarVisible, showEcuMenus, tabs, openTarget, handleStdTarget, openHelpTopic, showToast,
     closeProject, handleCreateRestorePoint,
-    setNewProjectDialogOpen, setConnectEcuWizardOpen, setImportProjectOpen, setSaveDialogOpen, setLoadDialogOpen,
+    setConnectEcuWizardOpen, setImportProjectOpen, setSaveDialogOpen, setLoadDialogOpen,
     setOnlineIniDialogOpen,
     setBurnDialogOpen, setFirmwareUpdateDialogOpen, setRestorePointsOpen, setTuneHistoryOpen, setSettingsDialogOpen,
     setMathChannelsDialogOpen, setAfrDelayTestOpen, setBaseMapDialogOpen, setTableComparisonOpen,
@@ -89,7 +88,6 @@ export function buildMenuItems(deps: BuildMenuItemsDeps): TunerMenuItem[] {
 
   const fileMenuItems: TunerMenuItem["items"] = currentProject
     ? [
-        { id: "new-project", label: t('file.newProject'), onClick: () => setNewProjectDialogOpen(true) },
         { id: "connect-ecu-wizard", label: "Connect ECU / New Project…", onClick: () => setConnectEcuWizardOpen(true) },
         { id: "import-project", label: t('file.importProject'), onClick: () => setImportProjectOpen(true) },
         { id: "search-ini-online", label: "Search for INI Online…", onClick: () => setOnlineIniDialogOpen(true) },
@@ -108,7 +106,6 @@ export function buildMenuItems(deps: BuildMenuItemsDeps): TunerMenuItem[] {
         { id: "exit", label: t('file.exit'), onClick: quitApp },
       ]
     : [
-        { id: "new-project", label: t('file.newProject'), onClick: () => setNewProjectDialogOpen(true) },
         { id: "connect-ecu-wizard", label: "Connect ECU / New Project…", onClick: () => setConnectEcuWizardOpen(true) },
         { id: "import-project", label: t('file.importProject'), onClick: () => setImportProjectOpen(true) },
         { id: "search-ini-online", label: "Search for INI Online…", onClick: () => setOnlineIniDialogOpen(true) },
