@@ -58,7 +58,7 @@
    sub-element into full width (multi-column split, embedded 2D table,
    hardware-test grid, wide command-button panel) needs the container to
    stay uncapped for that to actually reach full width. */
-.dialog-view .dialog-container:not(:has(.dialog-row-container)):not(:has(.nested-panel--multi)):not(:has(.table-editor-2d)):not(:has(.hardware-test-layout)):not(:has(.nested-panel--compact-commands)) {
+.dialog-view .dialog-container:not(:has(.dialog-row-container)):not(:has(.nested-panel--multi)):not(:has(.table-editor-2d)):not(:has(.hardware-test-layout)):not(:has(.nested-panel--compact-commands)):not(:has(.curve-editor)) {
   max-width: 720px;
 }
 
