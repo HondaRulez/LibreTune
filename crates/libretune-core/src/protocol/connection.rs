@@ -414,11 +414,9 @@ impl Connection {
         // parameters (the INI declares `endianness = little`), while Speeduino
         // and MS2/MS3 use big-endian command parameters.
         let cmd_le = endianness == Endianness::Little;
-        let envelope_order = if protocol.envelope_little_endian {
-            EnvelopeOrder::LittleEndian
-        } else {
-            EnvelopeOrder::BigEndian
-        };
+        // msEnvelope_1.0 default; the handshake's flip-retry adapts to a
+        // firmware that genuinely frames the other way.
+        let envelope_order = EnvelopeOrder::BigEndian;
         Self {
             channel: None,
             state: ConnectionState::Disconnected,
@@ -446,11 +444,7 @@ impl Connection {
         // Use LE command parameters when INI specifies little-endian (rusEFI/epicEFI/FOME).
         self.command_builder = CommandBuilder::new(endianness == Endianness::Little);
         self.endianness = endianness;
-        self.envelope_order = if protocol.envelope_little_endian {
-            EnvelopeOrder::LittleEndian
-        } else {
-            EnvelopeOrder::BigEndian
-        };
+        self.envelope_order = EnvelopeOrder::BigEndian;
         self.protocol_settings = Some(protocol);
     }
 
@@ -752,6 +746,11 @@ impl Connection {
                         "handshake: retrying CRC with flipped envelope order {:?}",
                         order
                     );
+                    // If the first frame's length was misparsed, the firmware
+                    // is still inside its ~400 ms SERIAL_TIMEOUT waiting for a
+                    // payload that will never come — bytes sent now are eaten
+                    // as that payload. Let the window expire before retrying.
+                    std::thread::sleep(Duration::from_millis(450));
                     if let Some(channel) = self.channel.as_mut() {
                         let _ = channel.clear_input_buffer();
                     }
@@ -1321,6 +1320,18 @@ impl Connection {
             .and_then(|p| p.och_get_command.clone());
 
         if forced == RuntimePacketMode::ForceBurst {
+            // A Speeduino in new-comms mode ignores a framed 'A' entirely
+            // (zero bytes back), so honouring this override verbatim yields a
+            // permanently empty stream with no error. Prefer OCH there and
+            // say so; the override still means Burst everywhere it works.
+            if self.use_modern_protocol {
+                if let Some(och) = och_cmd_opt.clone() {
+                    return (
+                        RuntimeFetch::OCH(och),
+                        "force: ForceBurst (burst is a no-op in new-comms; using OCH)".to_string(),
+                    );
+                }
+            }
             return (
                 RuntimeFetch::Burst(burst_cmd),
                 "force: ForceBurst".to_string(),
@@ -1361,7 +1372,10 @@ impl Connection {
         // error (`00 01 | 80 | crc32`) and ignored a *framed* 'A' entirely
         // (zero bytes back). New-comms fetches runtime data with the INI's
         // ochGetCommand — `r $tsCanId 0x30 %2o %2c` — so use OCH there.
-        if self.use_modern_protocol {
+        // Scoped to the burst lineage: rusEFI-family ECUs keep their
+        // existing heuristic chain below (they are always modern-protocol,
+        // and their burst path is framed and answered).
+        if self.use_modern_protocol && burst_ecu {
             if let Some(och) = och_cmd_opt.clone() {
                 return (
                     RuntimeFetch::OCH(och),
