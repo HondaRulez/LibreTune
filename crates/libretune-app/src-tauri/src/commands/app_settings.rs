@@ -231,7 +231,11 @@ fn default_commit_message_format() -> String {
     "Tune saved on {date} at {time}".to_string()
 }
 
-pub(crate) fn save_settings(app: &tauri::AppHandle, settings: &Settings) {
+/// Persist `settings`. Expected to be called only while holding
+/// [`SETTINGS_IO_LOCK`] via [`with_settings`], which also serializes the
+/// read half — otherwise two in-flight commands can lose each other's
+/// updates.
+fn save_settings_locked(app: &tauri::AppHandle, settings: &Settings) {
     apply_unit_symbols(settings);
     let settings_path = get_settings_path(app);
     // Ensure parent directory exists
@@ -241,6 +245,43 @@ pub(crate) fn save_settings(app: &tauri::AppHandle, settings: &Settings) {
     if let Err(e) = write_settings_atomic(&settings_path, settings) {
         eprintln!("[WARN] Failed to save settings: {}", e);
     }
+}
+
+/// Process-wide lock serializing ALL settings read-modify-write cycles.
+///
+/// Why: Tauri commands run concurrently on the async runtime, and settings
+/// updates used to be unsynchronized `load_settings` → mutate → `save_settings`
+/// sequences. Two races resulted:
+///
+/// 1. **Corrupt/failed atomic writes.** Concurrent saves both wrote to the
+///    SAME sibling `.tmp` file; when the first save renamed it away, the
+///    second save's rename failed with "The system cannot find the file
+///    specified. (os error 2)" (seen as repeated WARN spam), and truncated
+///    interleaved writes to the shared tmp handle could corrupt the file.
+/// 2. **Lost updates.** Two concurrent `update_setting` calls each loaded
+///    their own snapshot; the second save silently reverted the first call's
+///    change.
+///
+/// `std::sync::Mutex` (not tokio's) is correct here: the critical section is
+/// pure synchronous file I/O — no `.await` — so holding it cannot deadlock
+/// the executor's async tasks.
+static SETTINGS_IO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Run `f` against the current settings and persist the result, with the
+/// whole load → mutate → save cycle serialized against every other settings
+/// writer in the process.
+///
+/// The settings file is written even when `f` leaves the struct unchanged or
+/// returns `Err` (mirroring the previous save-always semantics of
+/// `update_settings`, which persists partially-applied batches).
+pub(crate) fn with_settings<R>(app: &tauri::AppHandle, f: impl FnOnce(&mut Settings) -> R) -> R {
+    let _guard = SETTINGS_IO_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut settings = load_settings(app);
+    let result = f(&mut settings);
+    save_settings_locked(app, &settings);
+    result
 }
 
 /// Write `settings` to `path` atomically: serialize to a sibling `.tmp` file,
