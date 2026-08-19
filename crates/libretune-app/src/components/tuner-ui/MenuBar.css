@@ -3,6 +3,7 @@
  */
 
 .menubar {
+  position: relative;
   display: flex;
   align-items: stretch;
   height: var(--menubar-height);

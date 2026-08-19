@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react';
+import { useState, useRef, useEffect, useCallback, CSSProperties, KeyboardEvent } from 'react';
 import { Check } from 'lucide-react';
 import { MenuItem } from './TunerLayout';
 import './MenuBar.css';
@@ -11,8 +11,21 @@ export function MenuBar({ items }: MenuBarProps) {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [dropdownLeft, setDropdownLeft] = useState(0);
   const menuBarRef = useRef<HTMLDivElement>(null);
   const moreWrapRef = useRef<HTMLDivElement>(null);
+  const itemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+
+  // The dropdown for the open top-level menu renders outside the scrollable
+  // `.menubar-items` row (see below) so horizontal scrolling can't clip it
+  // vertically; this measures where to anchor it under the clicked button.
+  const updateDropdownPosition = useCallback((itemId: string) => {
+    const btn = itemRefs.current[itemId];
+    const bar = menuBarRef.current;
+    if (btn && bar) {
+      setDropdownLeft(btn.getBoundingClientRect().left - bar.getBoundingClientRect().left);
+    }
+  }, []);
 
   // Parse accelerator from label (e.g., "&File" -> { label: "File", accelerator: "F" })
   const parseLabel = (label: string) => {
@@ -54,6 +67,7 @@ export function MenuBar({ items }: MenuBarProps) {
         });
         if (index !== -1) {
           e.preventDefault();
+          updateDropdownPosition(items[index].id);
           setOpenMenuId(items[index].id);
           setFocusedIndex(index);
         }
@@ -67,12 +81,13 @@ export function MenuBar({ items }: MenuBarProps) {
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [items, openMenuId]);
+  }, [items, openMenuId, updateDropdownPosition]);
 
   const handleMenuClick = (item: MenuItem, index: number) => {
     if (openMenuId === item.id) {
       setOpenMenuId(null);
     } else {
+      updateDropdownPosition(item.id);
       setOpenMenuId(item.id);
     }
     setFocusedIndex(index);
@@ -80,6 +95,7 @@ export function MenuBar({ items }: MenuBarProps) {
 
   const handleMenuHover = (item: MenuItem, index: number) => {
     if (openMenuId !== null) {
+      updateDropdownPosition(item.id);
       setOpenMenuId(item.id);
       setFocusedIndex(index);
     }
@@ -102,6 +118,7 @@ export function MenuBar({ items }: MenuBarProps) {
           const nextIndex = focusableIndexes[(pos + 1) % focusableIndexes.length];
           setFocusedIndex(nextIndex);
           if (openMenuId) {
+            updateDropdownPosition(items[nextIndex].id);
             setOpenMenuId(items[nextIndex].id);
           }
         }
@@ -114,6 +131,7 @@ export function MenuBar({ items }: MenuBarProps) {
             focusableIndexes[(pos - 1 + focusableIndexes.length) % focusableIndexes.length];
           setFocusedIndex(prevIndex);
           if (openMenuId) {
+            updateDropdownPosition(items[prevIndex].id);
             setOpenMenuId(items[prevIndex].id);
           }
         }
@@ -122,6 +140,7 @@ export function MenuBar({ items }: MenuBarProps) {
       case 'Enter':
       case ' ':
         e.preventDefault();
+        updateDropdownPosition(items[index].id);
         setOpenMenuId(items[index].id);
         break;
     }
@@ -132,9 +151,18 @@ export function MenuBar({ items }: MenuBarProps) {
     setFocusedIndex(-1);
   }, []);
 
+  // Closing on scroll avoids the dropdown drifting away from its button
+  // (its position is measured once, on open, not tracked continuously).
+  const handleItemsScroll = useCallback(() => {
+    setOpenMenuId(null);
+    setFocusedIndex(-1);
+  }, []);
+
+  const openItem = openMenuId ? items.find((item) => item.id === openMenuId) : undefined;
+
   return (
     <div className="menubar" ref={menuBarRef} role="menubar">
-      <div className="menubar-items">
+      <div className="menubar-items" onScroll={handleItemsScroll}>
         {items.map((item, index) => {
           // Top-level separators render as a non-focusable vertical rule.
           if (item.separator) {
@@ -153,6 +181,9 @@ export function MenuBar({ items }: MenuBarProps) {
           return (
             <div key={item.id} className="menubar-item-wrapper">
               <button
+                ref={(el) => {
+                  itemRefs.current[item.id] = el;
+                }}
                 className={`menubar-item ${isOpen ? 'menubar-item-open' : ''} ${
                   focusedIndex === index ? 'menubar-item-focused' : ''
                 }`}
@@ -169,18 +200,22 @@ export function MenuBar({ items }: MenuBarProps) {
                 )}
                 {parsed.after}
               </button>
-
-              {isOpen && item.items && (
-                <MenuDropdown
-                  items={item.items}
-                  onDismissAll={closeMenu}
-                  level={0}
-                />
-              )}
             </div>
           );
         })}
       </div>
+
+      {/* Rendered outside `.menubar-items` (whose horizontal scroll clips
+          any absolutely-positioned child vertically) and anchored via a
+          measured left offset instead. */}
+      {openItem && openItem.items && (
+        <MenuDropdown
+          items={openItem.items}
+          onDismissAll={closeMenu}
+          level={0}
+          style={{ left: dropdownLeft }}
+        />
+      )}
 
       {/* Reachability fallback for narrow windows: the row above scrolls
           horizontally (menubar-items { overflow-x: auto }), and this button
@@ -217,9 +252,10 @@ interface MenuDropdownProps {
   onDismissAll: () => void;
   onCloseSubmenu?: () => void;
   level?: number;
+  style?: CSSProperties;
 }
 
-function MenuDropdown({ items, onDismissAll, onCloseSubmenu, level = 0 }: MenuDropdownProps) {
+function MenuDropdown({ items, onDismissAll, onCloseSubmenu, level = 0, style }: MenuDropdownProps) {
   const [focusedIndex, setFocusedIndex] = useState(0);
   const [openSubmenuId, setOpenSubmenuId] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -326,6 +362,7 @@ function MenuDropdown({ items, onDismissAll, onCloseSubmenu, level = 0 }: MenuDr
   return (
     <div
       className={`menu-dropdown menu-dropdown-level-${level}`}
+      style={style}
       ref={dropdownRef}
       role="menu"
       onKeyDown={handleKeyDown}
