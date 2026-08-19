@@ -10,7 +10,9 @@ interface MenuBarProps {
 export function MenuBar({ items }: MenuBarProps) {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [focusedIndex, setFocusedIndex] = useState(-1);
+  const [moreOpen, setMoreOpen] = useState(false);
   const menuBarRef = useRef<HTMLDivElement>(null);
+  const moreWrapRef = useRef<HTMLDivElement>(null);
 
   // Parse accelerator from label (e.g., "&File" -> { label: "File", accelerator: "F" })
   const parseLabel = (label: string) => {
@@ -33,6 +35,7 @@ export function MenuBar({ items }: MenuBarProps) {
       if (menuBarRef.current && !menuBarRef.current.contains(e.target as Node)) {
         setOpenMenuId(null);
         setFocusedIndex(-1);
+        setMoreOpen(false);
       }
     };
 
@@ -131,51 +134,80 @@ export function MenuBar({ items }: MenuBarProps) {
 
   return (
     <div className="menubar" ref={menuBarRef} role="menubar">
-      {items.map((item, index) => {
-        // Top-level separators render as a non-focusable vertical rule.
-        if (item.separator) {
-          return (
-            <div
-              key={item.id || `sep-${index}`}
-              className="menubar-separator"
-              role="separator"
-              aria-orientation="vertical"
-            />
-          );
-        }
-        const parsed = parseLabel(item.label);
-        const isOpen = openMenuId === item.id;
-        
-        return (
-          <div key={item.id} className="menubar-item-wrapper">
-            <button
-              className={`menubar-item ${isOpen ? 'menubar-item-open' : ''} ${
-                focusedIndex === index ? 'menubar-item-focused' : ''
-              }`}
-              onClick={() => handleMenuClick(item, index)}
-              onMouseEnter={() => handleMenuHover(item, index)}
-              onKeyDown={(e) => handleMenuKeyDown(e, index)}
-              role="menuitem"
-              aria-haspopup="true"
-              aria-expanded={isOpen}
-            >
-              {parsed.before}
-              {parsed.accelerator && (
-                <span className="menubar-accelerator">{parsed.accelerator}</span>
-              )}
-              {parsed.after}
-            </button>
-            
-            {isOpen && item.items && (
-              <MenuDropdown
-                items={item.items}
-                onDismissAll={closeMenu}
-                level={0}
+      <div className="menubar-items">
+        {items.map((item, index) => {
+          // Top-level separators render as a non-focusable vertical rule.
+          if (item.separator) {
+            return (
+              <div
+                key={item.id || `sep-${index}`}
+                className="menubar-separator"
+                role="separator"
+                aria-orientation="vertical"
               />
-            )}
-          </div>
-        );
-      })}
+            );
+          }
+          const parsed = parseLabel(item.label);
+          const isOpen = openMenuId === item.id;
+
+          return (
+            <div key={item.id} className="menubar-item-wrapper">
+              <button
+                className={`menubar-item ${isOpen ? 'menubar-item-open' : ''} ${
+                  focusedIndex === index ? 'menubar-item-focused' : ''
+                }`}
+                onClick={() => handleMenuClick(item, index)}
+                onMouseEnter={() => handleMenuHover(item, index)}
+                onKeyDown={(e) => handleMenuKeyDown(e, index)}
+                role="menuitem"
+                aria-haspopup="true"
+                aria-expanded={isOpen}
+              >
+                {parsed.before}
+                {parsed.accelerator && (
+                  <span className="menubar-accelerator">{parsed.accelerator}</span>
+                )}
+                {parsed.after}
+              </button>
+
+              {isOpen && item.items && (
+                <MenuDropdown
+                  items={item.items}
+                  onDismissAll={closeMenu}
+                  level={0}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Reachability fallback for narrow windows: the row above scrolls
+          horizontally (menubar-items { overflow-x: auto }), and this button
+          lists every menu regardless of scroll position — same pattern as
+          the tab bar's "▾ More tabs" menu. */}
+      <div className="menubar-more-wrap" ref={moreWrapRef}>
+        <button
+          className={`menubar-more ${moreOpen ? 'menubar-item-open' : ''}`}
+          onClick={() => setMoreOpen((v) => !v)}
+          aria-haspopup="true"
+          aria-expanded={moreOpen}
+          aria-label="More menus"
+          title="More menus"
+        >
+          ⋯
+        </button>
+        {moreOpen && (
+          <MenuDropdown
+            items={items.filter((item) => !item.separator)}
+            onDismissAll={() => {
+              closeMenu();
+              setMoreOpen(false);
+            }}
+            level={0}
+          />
+        )}
+      </div>
     </div>
   );
 }
