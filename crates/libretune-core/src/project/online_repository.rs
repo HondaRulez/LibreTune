@@ -267,7 +267,7 @@ impl OnlineIniRepository {
                 "[online-ini] {} -> {} body: {}",
                 entry.download_url,
                 status,
-                &body.chars().take(300).collect::<String>()
+                body.chars().take(300).collect::<String>()
             );
             return Err(io::Error::other(format!("Download failed: {}", status)));
         }
